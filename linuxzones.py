@@ -24,20 +24,19 @@ import tkinter as tk
 # ------------------------------------------------------------------ helpers
 
 def _check_x11():
-    if os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("DISPLAY"):
+    """Verify an X display is reachable (native X11 or XWayland)."""
+    if os.environ.get("DISPLAY"):
+        return   # X11 or XWayland — good to go
+    if os.environ.get("WAYLAND_DISPLAY"):
         print(
-            "[linuxzones] ERROR: Running under a pure Wayland session.\n"
-            "  This tool requires X11 (Xorg). Options:\n"
-            "    • Cinnamon: select 'Cinnamon (X11)' at the login screen\n"
-            "    • GNOME:    select 'GNOME on Xorg' at the login screen\n"
-            "    • KDE:      select 'Plasma (X11)' at the login screen\n"
-            "  XWayland note: if DISPLAY is also set you may be in XWayland —\n"
-            "  event capture should work but window snapping may be unreliable."
+            "[linuxzones] ERROR: No X display found (DISPLAY is not set).\n"
+            "  You appear to be running Wayland with XWayland disabled.\n"
+            "  LinuxZones requires XWayland, which is enabled by default on\n"
+            "  GNOME and KDE — check your compositor settings to re-enable it."
         )
-        sys.exit(1)
-    if not os.environ.get("DISPLAY"):
-        print("[linuxzones] ERROR: DISPLAY is not set. Run inside an X11 session.")
-        sys.exit(1)
+    else:
+        print("[linuxzones] ERROR: DISPLAY is not set. Run inside a graphical session.")
+    sys.exit(1)
 
 
 def _get_screen_size():

@@ -12,14 +12,10 @@ An optional **Shift key** trigger is also available (disabled by default) — ho
 
 ## Requirements
 
-- Linux with an **X11 session** (Xorg). Wayland is not supported.
+- Linux with an **X11 or XWayland session**. XWayland is enabled by default on GNOME and KDE, so no extra steps are needed. Pure Wayland (XWayland explicitly disabled) is not supported.
 - Python 3.10+
 - `wmctrl` (for window repositioning)
 - `python-xlib`, `Pillow`, `tkinter`
-
-> **Cinnamon / Linux Mint users:** Cinnamon uses X11 by default. No extra steps needed.  
-> **GNOME users:** at the login screen, click the gear icon and select **GNOME on Xorg**.  
-> **KDE users:** select **Plasma (X11)** at login.
 
 ---
 
