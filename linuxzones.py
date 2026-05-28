@@ -10,7 +10,7 @@ Usage:
   python3 linuxzones.py --version
 """
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 import argparse
 import os
@@ -71,7 +71,7 @@ class LinuxZonesApp:
         from zones import load_config, save_config
         self._save_config = save_config
 
-        self.layouts, self.active, self.opacity = load_config()
+        self.layouts, self.active, self.opacity, self.shift_snap = load_config()
 
         if layout_override:
             if layout_override not in self.layouts:
@@ -101,7 +101,7 @@ class LinuxZonesApp:
 
         # X11 event daemon (background thread)
         from daemon import ZoneDaemon
-        self.daemon = ZoneDaemon(layout, self.ui_queue)
+        self.daemon = ZoneDaemon(layout, self.ui_queue, shift_snap=self.shift_snap)
         threading.Thread(
             target=self.daemon.run, daemon=True, name="linuxzones-record"
         ).start()
@@ -111,10 +111,15 @@ class LinuxZonesApp:
         # the desktop icon while already running opens the editor instead of no-op.
         signal.signal(signal.SIGUSR1, lambda *_: self.ui_queue.put(("open_editor",)))
 
+        shift_line = "  Shift key snap: enabled" if self.shift_snap else ""
         print(f"LinuxZones v{__version__}")
         print(f"  Layout : {self.active}  ({len(layout.zones)} zones)")
         print(f"  Opacity: {int(self.opacity * 100)}%")
+        if shift_line:
+            print(shift_line)
         print( "  Drag a window → hold right-click → release to snap to a zone.")
+        if self.shift_snap:
+            print( "  Or hold Shift while dragging as an alternative snap trigger.")
         print( "  Double-click the desktop icon again to open the layout editor.")
         print( "  Stop:  pkill linuxzones")
         print()
@@ -157,23 +162,30 @@ class LinuxZonesApp:
             self.layouts, self.active,
             self.screen_w, self.screen_h,
             opacity=self.opacity,
+            shift_snap=self.shift_snap,
             master=self.root,           # Toplevel mode; shares our mainloop
         )
         result = editor.run()           # blocks via wait_window()
 
         if result:
-            new_layouts, new_active, new_opacity = result
-            self.layouts    = new_layouts
-            self.active     = new_active
-            self.opacity    = new_opacity
-            save_config(new_layouts, new_active, new_opacity)
+            new_layouts, new_active, new_opacity, new_shift_snap = result
+            self.layouts     = new_layouts
+            self.active      = new_active
+            self.opacity     = new_opacity
+            self.shift_snap  = new_shift_snap
+            save_config(new_layouts, new_active, new_opacity, new_shift_snap)
 
             new_layout = new_layouts[new_active]
             self.overlay.update_zones(new_layout.zones)
             self.overlay.set_opacity(new_opacity)
             self.daemon.update_layout(new_layout)
+            self.daemon.update_shift_snap(new_shift_snap)
 
-            print(f"[linuxzones] Saved: layout='{new_active}', opacity={new_opacity:.0%}")
+            print(
+                f"[linuxzones] Saved: layout='{new_active}', "
+                f"opacity={new_opacity:.0%}, "
+                f"shift-snap={'on' if new_shift_snap else 'off'}"
+            )
 
     # ------------------------------------------------------------------ quit
 
@@ -247,23 +259,31 @@ def cmd_editor():
     from zones import load_config, save_config
     from editor import ZoneEditor
 
-    layouts, active, opacity = load_config()
+    layouts, active, opacity, shift_snap = load_config()
     screen_w, screen_h = _get_screen_size()
 
-    editor = ZoneEditor(layouts, active, screen_w, screen_h, opacity=opacity)
+    editor = ZoneEditor(layouts, active, screen_w, screen_h,
+                        opacity=opacity, shift_snap=shift_snap)
     result = editor.run()
     if result:
-        new_layouts, new_active, new_opacity = result
-        save_config(new_layouts, new_active, new_opacity)
-        print(f"[linuxzones] Saved: layout='{new_active}', opacity={new_opacity:.0%}")
+        new_layouts, new_active, new_opacity, new_shift_snap = result
+        save_config(new_layouts, new_active, new_opacity, new_shift_snap)
+        print(
+            f"[linuxzones] Saved: layout='{new_active}', "
+            f"opacity={new_opacity:.0%}, "
+            f"shift-snap={'on' if new_shift_snap else 'off'}"
+        )
     else:
         print("[linuxzones] Editor closed without saving.")
 
 
 def cmd_list():
     from zones import load_config
-    layouts, active, opacity = load_config()
-    print(f"LinuxZones v{__version__} — layouts (* = active)  overlay opacity: {opacity:.0%}")
+    layouts, active, opacity, shift_snap = load_config()
+    print(
+        f"LinuxZones v{__version__} — layouts (* = active)  "
+        f"opacity: {opacity:.0%}  shift-snap: {'on' if shift_snap else 'off'}"
+    )
     for name, layout in layouts.items():
         marker     = " *" if name == active else "  "
         zones_desc = f"{len(layout.zones)} zone{'s' if len(layout.zones) != 1 else ''}"

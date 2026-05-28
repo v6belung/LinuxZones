@@ -1,12 +1,18 @@
-"""X11 event daemon — monitors mouse globally via the RECORD extension.
+"""X11 event daemon — monitors mouse (and optionally keyboard) globally via
+the RECORD extension.
 
 Interaction model
 -----------------
   Left-drag a window normally.
-  Hold right mouse button   → zone overlay appears; move to choose a zone.
+  Hold right mouse button    → zone overlay appears; move to choose a zone.
   Release right mouse button → window snaps to the highlighted zone and fills it.
   Quick right-click          → overlay flashes for one frame, same snap on release.
   Release left button        → cancel drag, overlay hides (no snap).
+
+  Shift key snap (optional, disabled by default):
+  Hold Shift while left-dragging → zone overlay appears.
+  Release Shift                  → snaps to the highlighted zone.
+  This is an alternative to right-click, enabled via the Layout Editor.
 
 The daemon runs on a background thread and communicates with the Tkinter
 overlay via a thread-safe queue.Queue.
@@ -38,7 +44,7 @@ class _State:
 
 
 class ZoneDaemon:
-    def __init__(self, layout: Layout, ui_queue: queue.Queue):
+    def __init__(self, layout: Layout, ui_queue: queue.Queue, shift_snap: bool = False):
         self.layout   = layout
         self.ui_queue = ui_queue
 
@@ -74,6 +80,26 @@ class ZoneDaemon:
         # Set True just before we send a fake B1 release via XTest so the RECORD
         # echo can be identified and swallowed without corrupting state.
         self._swallow_b1_release: bool    = False
+
+        # Shift-key snap (optional feature, disabled by default)
+        # CPython bool assignment is atomic; no lock needed for this flag.
+        self._shift_snap:         bool    = shift_snap
+        self._shift_held:         bool    = False
+        # True when the Shift key (not B3) triggered the current overlay.
+        # Determines which release event triggers the snap.
+        self._overlay_by_shift:   bool    = False
+        # Timestamp of the last Shift key-release, used to suppress X11
+        # auto-repeat (which fires rapid Release+Press pairs).
+        self._shift_last_release: float   = 0.0
+
+        # Resolve Shift_L / Shift_R hardware keycodes once at startup.
+        try:
+            from Xlib import XK as _xk
+            _sl = self.ctrl_dpy.keysym_to_keycode(_xk.XK_Shift_L)
+            _sr = self.ctrl_dpy.keysym_to_keycode(_xk.XK_Shift_R)
+            self._shift_keycodes: frozenset = frozenset(c for c in (_sl, _sr) if c)
+        except Exception:
+            self._shift_keycodes = frozenset()
 
     # ------------------------------------------------------------------ window helpers
 
@@ -240,6 +266,47 @@ class ZoneDaemon:
     def _handle(self, event) -> None:
         etype = event.type
 
+        # ---- Keyboard events (Shift key snap) ----------------------------
+        if etype == X.KeyPress:
+            kc = event.detail
+            if kc not in self._shift_keycodes or not self._shift_snap:
+                return
+            # Auto-repeat guard: X11 sends rapid Release+Press pairs for held
+            # keys; ignore a press that comes within 50 ms of the last release.
+            if time.time() - self._shift_last_release < 0.05:
+                return
+            self._shift_held = True
+            if self._state == _State.DRAGGING:
+                self._overlay_by_shift = True
+                self._state = _State.OVERLAY_ACTIVE
+                zone_idx = self.layout.zone_at(
+                    event.root_x, event.root_y, self.screen_w, self.screen_h)
+                self._last_zone = zone_idx
+                self.ui_queue.put(("show",))
+                self.ui_queue.put(("highlight", zone_idx))
+            return
+
+        elif etype == X.KeyRelease:
+            kc = event.detail
+            if kc not in self._shift_keycodes:
+                return
+            self._shift_last_release = time.time()
+            self._shift_held = False
+            if self._state == _State.OVERLAY_ACTIVE and self._overlay_by_shift:
+                # Shift released → snap and hide overlay.
+                zone_idx = self.layout.zone_at(
+                    event.root_x, event.root_y, self.screen_w, self.screen_h)
+                self.ui_queue.put(("hide",))
+                self._state = _State.DRAGGING
+                self._overlay_by_shift = False
+                if zone_idx is not None:
+                    self._snap(zone_idx)
+                if not self._b1_held:
+                    self._state    = _State.IDLE
+                    self._drag_win = None
+            return
+
+        # ---- Mouse button events -----------------------------------------
         if etype == X.ButtonPress:
             btn = event.detail
 
@@ -252,8 +319,10 @@ class ZoneDaemon:
                 self._b1_held   = True
 
             elif btn == 3 and self._state in (_State.DRAGGING, _State.OVERLAY_ACTIVE):
-                # Right pressed while dragging → show overlay
+                # Right pressed while dragging → show overlay (B3 takes ownership;
+                # any in-progress Shift-triggered overlay is handed over to B3).
                 self._state = _State.OVERLAY_ACTIVE
+                self._overlay_by_shift = False
                 zone_idx = self.layout.zone_at(
                     event.root_x, event.root_y, self.screen_w, self.screen_h)
                 self._last_zone = zone_idx
@@ -263,8 +332,8 @@ class ZoneDaemon:
         elif etype == X.ButtonRelease:
             btn = event.detail
 
-            if btn == 3 and self._state == _State.OVERLAY_ACTIVE:
-                # Right released → snap, hide overlay.
+            if btn == 3 and self._state == _State.OVERLAY_ACTIVE and not self._overlay_by_shift:
+                # Right released (and overlay was B3-triggered) → snap, hide overlay.
                 zone_idx = self.layout.zone_at(
                     event.root_x, event.root_y, self.screen_w, self.screen_h)
                 self.ui_queue.put(("hide",))
@@ -346,8 +415,9 @@ class ZoneDaemon:
                 "ext_requests":     (0, 0, 0, 0),
                 "ext_replies":      (0, 0, 0, 0),
                 "delivered_events": (0, 0),
-                # ButtonPress=4, ButtonRelease=5, MotionNotify=6
-                "device_events":    (X.ButtonPress, X.MotionNotify),
+                # KeyPress=2, KeyRelease=3, ButtonPress=4,
+                # ButtonRelease=5, MotionNotify=6
+                "device_events":    (X.KeyPress, X.MotionNotify),
                 "errors":           (0, 0),
                 "client_started":   False,
                 "client_died":      False,
@@ -361,3 +431,7 @@ class ZoneDaemon:
     def update_layout(self, layout: Layout) -> None:
         """Thread-safe layout swap."""
         self.layout = layout
+
+    def update_shift_snap(self, enabled: bool) -> None:
+        """Thread-safe shift-snap toggle (called from the UI thread after editor saves)."""
+        self._shift_snap = enabled

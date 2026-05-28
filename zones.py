@@ -88,10 +88,11 @@ DEFAULT_LAYOUTS: Dict[str, Layout] = {
 }
 
 
-def load_config() -> Tuple[Dict[str, Layout], str, float]:
-    """Returns (layouts, active_layout_name, overlay_opacity). Falls back to defaults."""
+def load_config() -> Tuple[Dict[str, Layout], str, float, bool]:
+    """Returns (layouts, active_layout_name, overlay_opacity, shift_snap).
+    Falls back to defaults."""
     if not os.path.exists(CONFIG_FILE):
-        return dict(DEFAULT_LAYOUTS), "ultrawide-8-16-8", 0.5
+        return dict(DEFAULT_LAYOUTS), "ultrawide-8-16-8", 0.5, False
     try:
         with open(CONFIG_FILE) as f:
             data = json.load(f)
@@ -106,19 +107,26 @@ def load_config() -> Tuple[Dict[str, Layout], str, float]:
             active = next(iter(layouts))
         opacity = float(data.get("overlay_opacity", 0.5))
         opacity = max(0.1, min(0.9, opacity))
-        return layouts, active, opacity
+        shift_snap = bool(data.get("shift_snap", False))
+        return layouts, active, opacity, shift_snap
     except Exception as e:
         print(f"[linuxzones] Config load error: {e}. Using defaults.")
-        return dict(DEFAULT_LAYOUTS), "ultrawide-8-16-8", 0.5
+        return dict(DEFAULT_LAYOUTS), "ultrawide-8-16-8", 0.5, False
 
 
-def save_config(layouts: Dict[str, Layout], active_layout: str, opacity: float = 0.5) -> None:
+def save_config(
+    layouts: Dict[str, Layout],
+    active_layout: str,
+    opacity: float = 0.5,
+    shift_snap: bool = False,
+) -> None:
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CONFIG_FILE, "w") as f:
         json.dump(
             {
                 "active_layout": active_layout,
                 "overlay_opacity": round(opacity, 2),
+                "shift_snap": shift_snap,
                 "layouts": {name: l.to_dict() for name, l in layouts.items()},
             },
             f,

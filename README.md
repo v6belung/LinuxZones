@@ -1,10 +1,12 @@
 # LinuxZones
 
-**Current version: 0.1.4**
+**Current version: 0.1.5**
 
 Window zone snapping for Linux — replicates the core FancyZones workflow from Windows PowerToys.
 
 **Interaction model:** drag a window with the left mouse button, then **hold right-click** to show the zone overlay. Move into the zone you want and **release right-click** to snap and resize the window to fill it. Release the left button at any point to cancel without snapping.
+
+An optional **Shift key** trigger is also available (disabled by default) — hold Shift while dragging to show the overlay, release Shift to snap. Enable it in the Layout Editor under **Settings**.
 
 ---
 
@@ -57,28 +59,35 @@ The app starts silently in the background and places an icon in your **system tr
 ### The editor interface
 
 ```
-┌─────────────────┬────────────────────────────────────────┐
-│  Layouts        │                                        │
-│  ─────────────  │   (scaled screen preview)              │
-│  ultrawide *    │                                        │
-│  halves         │  ┌────────┬──────────────────┬──────┐  │
-│  thirds         │  │        │                  │      │  │
-│  ─────────────  │  │  left  │     center       │right │  │
-│  Presets        │  │  25%   │       50%        │  25% │  │
-│  halves         │  └────────┴──────────────────┴──────┘  │
-│  thirds         │                                        │
-│  quad           │                                        │
-│  ─────────────  │                                        │
-│  Zone 1 (left)  │                                        │
-│  x=0.00 y=0.00  │                                        │
-│  w=0.25 h=1.00  │                                        │
-│  800×1440 px    │                                        │
-│  [Delete Zone]  │                                        │
-│  ─────────────  │                                        │
-│  Overlay opacity│                                        │
-│  [──────●────] 50%                                       │
-├─────────────────┴────────────────────────────────────────┤
-│                               [Cancel]  [Save & Close]   │
+┌────────────────────┬──────────────────────────────────────┐
+│ LAYOUTS            │                                      │
+│  ● ultrawide-8-16-8│   (scaled screen preview)            │
+│    halves          │                                      │
+│    thirds          │  ┌────────┬──────────────┬──────┐   │
+│  [New]    [Rename] │  │        │              │      │   │
+│  [Dup]    [Delete] │  │  left  │    center    │right │   │
+│                    │  │  25%×100% │  50%×100% │ 25%  │   │
+│ PRESETS            │  └────────┴──────────────┴──────┘   │
+│  [ultrawide-8-16-8]│                                      │
+│  [halves]          │                                      │
+│  [thirds]          │                                      │
+│  [quad]            │                                      │
+│  [primary-sidebar] │                                      │
+│                    │                                      │
+│ SELECTED ZONE      │                                      │
+│  Zone 1  ·  left   │                                      │
+│  x   0.0%  y  0.0% │                                      │
+│  w  25.0%  h 100.0%│                                      │
+│  480 × 1080 px     │                                      │
+│  [Rename][Delete]  │                                      │
+│                    │                                      │
+│ SETTINGS           │                                      │
+│  ☐ Shift key snap  │                                      │
+│                    │                                      │
+│ OVERLAY OPACITY    │                                      │
+│  [─────●─────] 50% │                                      │
+├────────────────────┴──────────────────── ────────────────┤
+│                              [Cancel]  [Save & Close]    │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -131,14 +140,26 @@ Configuration is saved to `~/.config/linuxzones/config.json` and is human-editab
 
 ## How snapping works
 
+### Right-click trigger (default)
+
 1. Left-click and hold the title bar of any window and begin dragging.
 2. **Press and hold the right mouse button** — the zone overlay appears.
 3. Move the cursor over the zone you want — it highlights white.
 4. **Release the right mouse button** — the window snaps and resizes to fill that zone exactly.
 5. To cancel without snapping, release the **left** mouse button instead.
 
-> **Quick snap:** you don't have to hold right — a fast right-click (press + release)
-> while dragging works the same way; the overlay appears briefly and snaps on release.
+> **Quick snap:** a fast right-click (press + release) while dragging works the same way.
+
+### Shift key trigger (optional, disabled by default)
+
+Enable **Shift key snap** in the Layout Editor → **Settings** section.
+
+1. Left-click and drag a window.
+2. **Press and hold Shift** — the zone overlay appears.
+3. Move the cursor over the desired zone.
+4. **Release Shift** — the window snaps to that zone.
+
+Both triggers are independent. Right-click always works regardless of the Shift setting.
 
 ---
 
