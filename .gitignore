@@ -1,0 +1,11 @@
+# Generated at install time — not needed in source control
+icon.png
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Runtime files written by the running process
+*.lock
+*.pid
+*.log

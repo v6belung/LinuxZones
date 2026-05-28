@@ -1,0 +1,4 @@
+# All text files committed and checked out with LF.
+# This project runs on Linux — CRLF line endings break shell scripts and
+# can cause subtle issues in Python files.
+* text=auto eol=lf
