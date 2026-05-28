@@ -1,19 +1,8 @@
 """Zone layout editor — draw zones by click-dragging on a scaled screen preview.
 
-UI layout
----------
-Left sidebar (230 px, fixed):
-  LAYOUTS        listbox + New / Rename / Duplicate / Delete
-  PRESETS        preset quick-apply buttons
-  SELECTED ZONE  zone info card + Rename Zone / Delete Zone
-  SETTINGS       Shift-key snap checkbox
-  OVERLAY        opacity slider
-
-Right area:
-  canvas hint + scaled screen preview (click-drag to draw zones)
-
-Bottom bar:
-  [Cancel]  [Save & Close]
+Uses ttk widgets throughout so the dialog inherits the desktop's native theme.
+The only non-system colours are inside the zone-preview canvas (dark background
+and brightly coloured zone rectangles — purely visual, not UI chrome).
 
 run() returns (layouts, active_layout, opacity, shift_snap) on save,
 or None on cancel.
@@ -21,36 +10,16 @@ or None on cancel.
 
 import copy
 import tkinter as tk
-from tkinter import simpledialog, messagebox
+from tkinter import ttk, simpledialog, messagebox
 from typing import Dict, List, Optional, Tuple
 
 from zones import Zone, Layout, DEFAULT_LAYOUTS
 
 GRID = 0.05   # snap-to-grid step (5 % of screen)
 
-# Zone colours for the preview canvas
+# Colours used only inside the zone-preview canvas
 _ZONE_COLORS = ["#4a90d9", "#7b68ee", "#48c774", "#ff9f43", "#ff6b35", "#e84393"]
-
-# ── Colour palette (dark theme, WCAG AA–compliant) ───────────────────────────
-PANEL_BG    = "#252526"   # sidebar / window background
-SECTION_BG  = "#1e1e1e"   # section-header strip
-CANVAS_BG   = "#1a1a2e"   # preview canvas
-INPUT_BG    = "#3a3a3b"   # listbox / input field
-BTN_N       = "#3c3c3d"   # normal button background
-BTN_N_HV    = "#505051"   # normal button hover
-BTN_D       = "#5c1818"   # destructive button background
-BTN_D_HV    = "#8b2020"   # destructive button hover
-BTN_OK      = "#1a4228"   # primary (save) button background
-BTN_OK_HV   = "#215c38"   # primary button hover
-ACCENT      = "#4a90d9"   # selection highlight
-FG          = "#cccccc"   # primary text
-FG_DIM      = "#888888"   # secondary / hint text
-FG_HINT     = "#555555"   # placeholder text
-HDR_FG      = "#569cd6"   # section-header label
-SEL_BG      = "#264f78"   # listbox selection background
-FG_DANGER   = "#f98080"   # text on destructive buttons
-FG_SUCCESS  = "#6ee7a8"   # text on save button
-BAR_BG      = "#1a1a1a"   # bottom action bar
+_CANVAS_BG   = "#1a1a2e"
 
 
 def _snap_val(v: float) -> float:
@@ -62,11 +31,9 @@ class ZoneEditor:
 
     Parameters
     ----------
-    layouts        : dict mapping name → Layout
-    active_layout  : key of the currently active layout
-    screen_w/h     : screen dimensions in pixels
+    layouts, active_layout, screen_w/h : as usual
     opacity        : current overlay opacity (0.0–1.0)
-    shift_snap     : whether Shift-key snap is enabled
+    shift_snap     : whether Shift-key snap is currently enabled
     master         : parent tk.Tk for embedded Toplevel mode;
                      None = standalone (creates its own Tk root)
 
@@ -90,7 +57,7 @@ class ZoneEditor:
         self.screen_h      = screen_h
         self.result        = None
 
-        # Scale preview canvas to ≤800 px wide, preserving aspect ratio.
+        # Scale preview canvas to ≤800 px wide, preserving aspect ratio
         self.pw = 800
         self.ph = int(800 * screen_h / screen_w)
 
@@ -99,7 +66,6 @@ class ZoneEditor:
         self._selected:   Optional[int]             = None
         self._layout_names: List[str]               = []
 
-        # Create root window
         if master is None:
             self.root      = tk.Tk()
             self._toplevel = False
@@ -108,10 +74,8 @@ class ZoneEditor:
             self._toplevel = True
 
         self.root.title("LinuxZones — Layout Editor")
-        self.root.configure(bg=PANEL_BG)
         self.root.resizable(False, False)
 
-        # Tk variables
         self.opacity_var    = tk.IntVar(value=max(10, min(90, int(opacity * 100))))
         self.shift_snap_var = tk.BooleanVar(value=shift_snap)
 
@@ -120,199 +84,153 @@ class ZoneEditor:
         self._update_info()
         self._redraw()
 
-    # ── UI helpers ────────────────────────────────────────────────────────────
-
-    def _section(self, parent: tk.Frame, title: str) -> None:
-        """Render a labelled section-header strip with top margin."""
-        strip = tk.Frame(parent, bg=SECTION_BG)
-        strip.pack(fill="x", pady=(10, 4))
-        tk.Label(
-            strip, text=title, bg=SECTION_BG, fg=HDR_FG,
-            font=("sans-serif", 8, "bold"),
-            padx=8, pady=3, anchor="w",
-        ).pack(fill="x")
-
-    def _btn(
-        self, parent: tk.Frame, text: str, cmd,
-        style: str = "normal", **kw
-    ) -> tk.Button:
-        """Styled button with hover colour transition."""
-        palette = {
-            "normal":  (BTN_N,  BTN_N_HV,  FG),
-            "danger":  (BTN_D,  BTN_D_HV,  FG_DANGER),
-            "success": (BTN_OK, BTN_OK_HV, FG_SUCCESS),
-        }
-        bg, hv, fg = palette.get(style, palette["normal"])
-        b = tk.Button(
-            parent, text=text, command=cmd,
-            bg=bg, fg=fg, activebackground=hv, activeforeground=fg,
-            relief="flat", bd=0, cursor="hand2", **kw
-        )
-        b.bind("<Enter>", lambda _, b=b, h=hv: b.configure(bg=h))
-        b.bind("<Leave>", lambda _, b=b, n=bg: b.configure(bg=n))
-        return b
-
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _build(self) -> None:
+        # Main frame splits into sidebar (left) + canvas area (right)
+        main = ttk.Frame(self.root, padding=8)
+        main.pack(fill="both", expand=True)
 
-        # ── Left sidebar (fixed width) ────────────────────────────────────
-        sidebar = tk.Frame(self.root, bg=PANEL_BG, width=230)
-        sidebar.pack(side="left", fill="y")
+        # ── Left sidebar ──────────────────────────────────────────────────
+        sidebar = ttk.Frame(main, width=240)
+        sidebar.pack(side="left", fill="y", padx=(0, 10))
         sidebar.pack_propagate(False)
 
-        # ── LAYOUTS ───────────────────────────────────────────────────────
-        self._section(sidebar, "LAYOUTS")
+        # LAYOUTS ---------------------------------------------------------
+        lf_layouts = ttk.LabelFrame(sidebar, text="Layouts")
+        lf_layouts.pack(fill="x", pady=(0, 6))
 
+        lb_wrap = ttk.Frame(lf_layouts)
+        lb_wrap.pack(fill="x", padx=4, pady=(4, 0))
+
+        scrollbar = ttk.Scrollbar(lb_wrap, orient="vertical")
         self.lb = tk.Listbox(
-            sidebar,
-            bg=INPUT_BG, fg=FG,
-            selectbackground=SEL_BG, selectforeground="#ffffff",
-            relief="flat", height=5,
-            font=("monospace", 9),
+            lb_wrap,
+            height=5,
+            yscrollcommand=scrollbar.set,
+            exportselection=False,
             activestyle="none",
-            highlightthickness=0,
         )
-        self.lb.pack(fill="x", padx=8, pady=(0, 6))
-        self.lb.bind("<<ListboxSelect>>",  self._on_layout_select)
-        self.lb.bind("<Double-Button-1>",  lambda _: self._rename_layout())
+        scrollbar.config(command=self.lb.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.lb.pack(side="left", fill="both", expand=True)
+        self.lb.bind("<<ListboxSelect>>", self._on_layout_select)
+        self.lb.bind("<Double-Button-1>", lambda _: self._rename_layout())
 
-        # Row 1: New + Rename
-        r1 = tk.Frame(sidebar, bg=PANEL_BG)
-        r1.pack(fill="x", padx=8, pady=(0, 2))
-        self._btn(r1, "New",    self._new_layout,    padx=6, pady=4
-                  ).pack(side="left", expand=True, fill="x", padx=(0, 2))
-        self._btn(r1, "Rename", self._rename_layout, padx=6, pady=4
-                  ).pack(side="left", expand=True, fill="x")
+        r1 = ttk.Frame(lf_layouts)
+        r1.pack(fill="x", padx=4, pady=(4, 0))
+        ttk.Button(r1, text="New",    command=self._new_layout   ).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        ttk.Button(r1, text="Rename", command=self._rename_layout).pack(side="left", expand=True, fill="x")
 
-        # Row 2: Duplicate + Delete (destructive)
-        r2 = tk.Frame(sidebar, bg=PANEL_BG)
-        r2.pack(fill="x", padx=8)
-        self._btn(r2, "Duplicate", self._dup_layout,    padx=6, pady=4
-                  ).pack(side="left", expand=True, fill="x", padx=(0, 2))
-        self._btn(r2, "Delete",    self._delete_layout, style="danger", padx=6, pady=4
-                  ).pack(side="left", expand=True, fill="x")
+        r2 = ttk.Frame(lf_layouts)
+        r2.pack(fill="x", padx=4, pady=(2, 4))
+        ttk.Button(r2, text="Duplicate", command=self._dup_layout   ).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        ttk.Button(r2, text="Delete",    command=self._delete_layout).pack(side="left", expand=True, fill="x")
 
-        # ── PRESETS ───────────────────────────────────────────────────────
-        self._section(sidebar, "PRESETS")
+        # PRESETS ---------------------------------------------------------
+        lf_presets = ttk.LabelFrame(sidebar, text="Presets")
+        lf_presets.pack(fill="x", pady=(0, 6))
+
         for preset in DEFAULT_LAYOUTS:
-            self._btn(
-                sidebar, preset,
-                lambda p=preset: self._apply_preset(p),
-                padx=6, pady=3,
-            ).pack(fill="x", padx=8, pady=1)
+            ttk.Button(
+                lf_presets, text=preset,
+                command=lambda p=preset: self._apply_preset(p),
+            ).pack(fill="x", padx=4, pady=1)
+        ttk.Frame(lf_presets).pack(pady=2)   # bottom breathing room
 
-        # ── SELECTED ZONE ─────────────────────────────────────────────────
-        self._section(sidebar, "SELECTED ZONE")
+        # SELECTED ZONE ---------------------------------------------------
+        lf_zone = ttk.LabelFrame(sidebar, text="Selected Zone")
+        lf_zone.pack(fill="x", pady=(0, 6))
 
         self.zone_var = tk.StringVar(value="Click a zone to select it")
-        self._zone_lbl = tk.Label(
-            sidebar, textvariable=self.zone_var,
-            bg=PANEL_BG, fg=FG_HINT,
-            wraplength=210, justify="left",
-            font=("sans-serif", 9),
-            anchor="nw", padx=8,
-        )
-        self._zone_lbl.pack(fill="x", pady=(2, 6))
+        ttk.Label(
+            lf_zone, textvariable=self.zone_var,
+            wraplength=220, justify="left",
+            font="TkFixedFont",
+        ).pack(fill="x", padx=6, pady=4)
 
-        zb = tk.Frame(sidebar, bg=PANEL_BG)
-        zb.pack(fill="x", padx=8)
-        self._btn(zb, "Rename Zone", self._rename_zone, padx=6, pady=3
-                  ).pack(side="left", expand=True, fill="x", padx=(0, 2))
-        self._btn(zb, "Delete Zone", self._delete_zone, style="danger", padx=6, pady=3
-                  ).pack(side="left", expand=True, fill="x")
+        zb = ttk.Frame(lf_zone)
+        zb.pack(fill="x", padx=4, pady=(0, 4))
+        ttk.Button(zb, text="Rename Zone", command=self._rename_zone).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        ttk.Button(zb, text="Delete Zone", command=self._delete_zone).pack(side="left", expand=True, fill="x")
 
-        # ── SETTINGS ─────────────────────────────────────────────────────
-        self._section(sidebar, "SETTINGS")
+        # SETTINGS --------------------------------------------------------
+        lf_settings = ttk.LabelFrame(sidebar, text="Settings")
+        lf_settings.pack(fill="x", pady=(0, 6))
 
-        tk.Checkbutton(
-            sidebar,
-            text=" Shift key snap",
+        ttk.Checkbutton(
+            lf_settings,
+            text="Shift key snap",
             variable=self.shift_snap_var,
-            bg=PANEL_BG, fg=FG,
-            selectcolor=INPUT_BG,
-            activebackground=PANEL_BG, activeforeground=FG,
-            relief="flat", bd=0,
-            font=("sans-serif", 9),
-        ).pack(anchor="w", padx=6, pady=(2, 0))
-        tk.Label(
-            sidebar, text="Hold Shift while dragging to snap\n(alternative to right-click)",
-            bg=PANEL_BG, fg=FG_HINT,
-            font=("sans-serif", 8), anchor="w", padx=24,
-        ).pack(fill="x", pady=(0, 4))
+        ).pack(anchor="w", padx=6, pady=(6, 2))
+        ttk.Label(
+            lf_settings,
+            text="Hold Shift while dragging to snap\n(alternative to right-click)",
+            justify="left",
+        ).pack(anchor="w", padx=24, pady=(0, 6))
 
-        # ── OVERLAY OPACITY ───────────────────────────────────────────────
-        self._section(sidebar, "OVERLAY OPACITY")
+        # OVERLAY OPACITY -------------------------------------------------
+        lf_opacity = ttk.LabelFrame(sidebar, text="Overlay Opacity")
+        lf_opacity.pack(fill="x")
 
-        opacity_row = tk.Frame(sidebar, bg=PANEL_BG)
-        opacity_row.pack(fill="x", padx=8, pady=(4, 0))
+        op_row = ttk.Frame(lf_opacity)
+        op_row.pack(fill="x", padx=4, pady=4)
 
-        self._opacity_lbl = tk.Label(
-            opacity_row,
-            text=f"{self.opacity_var.get()}%",
-            bg=PANEL_BG, fg=FG,
-            font=("sans-serif", 9, "bold"),
-            width=4, anchor="e",
+        self._opacity_lbl = ttk.Label(
+            op_row, text=f"{self.opacity_var.get()}%", width=4, anchor="e",
         )
         self._opacity_lbl.pack(side="right")
 
-        tk.Scale(
-            opacity_row,
+        ttk.Scale(
+            op_row,
             from_=10, to=90,
             orient="horizontal",
             variable=self.opacity_var,
             command=self._on_opacity,
-            bg=PANEL_BG, fg=FG,
-            activebackground=ACCENT,
-            troughcolor=INPUT_BG,
-            highlightthickness=0,
-            showvalue=False, bd=0,
-        ).pack(side="left", fill="x", expand=True)
+        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
 
-        tk.Label(
-            sidebar, text="how visible the zone overlay is",
-            bg=PANEL_BG, fg=FG_HINT,
-            font=("sans-serif", 8), anchor="w", padx=8,
-        ).pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            lf_opacity,
+            text="how visible the zone overlay is during snapping",
+            justify="left",
+        ).pack(anchor="w", padx=6, pady=(0, 4))
 
         # ── Right: canvas area ────────────────────────────────────────────
-        right = tk.Frame(self.root, bg=PANEL_BG)
+        right = ttk.Frame(main)
         right.pack(side="right", fill="both", expand=True)
 
-        tk.Label(
+        ttk.Label(
             right,
-            text="Draw: click-drag  ·  Select: click  ·  Delete: right-click",
-            bg=PANEL_BG, fg=FG_HINT, font=("sans-serif", 8),
-        ).pack(pady=(8, 0))
+            text="Draw: click-drag  ·  Select: left-click  ·  Delete: right-click",
+        ).pack(pady=(0, 4))
 
         self.canvas = tk.Canvas(
             right, width=self.pw, height=self.ph,
-            bg=CANVAS_BG,
-            highlightthickness=2, highlightbackground="#383838",
+            bg=_CANVAS_BG,
+            highlightthickness=1, highlightbackground="gray",
             cursor="crosshair",
         )
-        self.canvas.pack(padx=16, pady=(6, 8))
+        self.canvas.pack()
         self.canvas.bind("<ButtonPress-1>",   self._on_press)
         self.canvas.bind("<B1-Motion>",       self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
         self.canvas.bind("<ButtonPress-3>",   self._on_right_click)
 
         # ── Bottom action bar ─────────────────────────────────────────────
-        bar = tk.Frame(self.root, bg=BAR_BG)
-        bar.pack(fill="x", side="bottom")
+        ttk.Separator(self.root, orient="horizontal").pack(fill="x")
 
-        actions = tk.Frame(bar, bg=BAR_BG)
-        actions.pack(side="right", padx=12, pady=8)
+        bar = ttk.Frame(self.root, padding=(8, 6))
+        bar.pack(fill="x")
 
-        self._btn(actions, "Cancel", self.root.destroy,
-                  padx=14, pady=6).pack(side="left", padx=(0, 8))
-        self._btn(actions, "Save & Close", self._save, style="success",
-                  font=("sans-serif", 10, "bold"), padx=16, pady=6
-                  ).pack(side="left")
+        # Save & Close on the right, Cancel to its left
+        ttk.Button(bar, text="Save & Close", command=self._save       ).pack(side="right")
+        ttk.Button(bar, text="Cancel",       command=self.root.destroy).pack(side="right", padx=(0, 4))
 
     # ── Opacity ───────────────────────────────────────────────────────────────
 
     def _on_opacity(self, _=None) -> None:
+        # ttk.Scale command callback passes the value as a string; use the
+        # IntVar instead for a clean integer display.
         self._opacity_lbl.config(text=f"{self.opacity_var.get()}%")
 
     # ── Layout list ───────────────────────────────────────────────────────────
@@ -414,7 +332,6 @@ class ZoneEditor:
 
     def _redraw(self) -> None:
         self.canvas.delete("all")
-        # Screen border
         self.canvas.create_rectangle(
             1, 1, self.pw - 1, self.ph - 1,
             outline="#3a3a3a", width=1,
@@ -435,7 +352,6 @@ class ZoneEditor:
                 width=3 if sel else 1,
                 stipple="gray50",
             )
-            # Zone label
             label = z.name or str(i + 1)
             pct   = f"{z.w * 100:.0f}% × {z.h * 100:.0f}%"
             mid_x = x + w // 2
@@ -454,24 +370,19 @@ class ZoneEditor:
     # ── Zone info panel ───────────────────────────────────────────────────────
 
     def _update_info(self) -> None:
-        """Refresh the SELECTED ZONE info label."""
         if self._selected is None or self._selected >= len(self._layout.zones):
             self.zone_var.set("Click a zone to select it")
-            self._zone_lbl.config(fg=FG_HINT, font=("sans-serif", 9, "italic"))
             return
-
         z    = self._layout.zones[self._selected]
         px_w = int(z.w * self.screen_w)
         px_h = int(z.h * self.screen_h)
         name_part = f"  ·  {z.name}" if z.name else ""
-        info = (
+        self.zone_var.set(
             f"Zone {self._selected + 1}{name_part}\n"
-            f"x {z.x * 100:5.1f}%   y {z.y * 100:5.1f}%\n"
-            f"w {z.w * 100:5.1f}%   h {z.h * 100:5.1f}%\n"
+            f"x={z.x * 100:.0f}%  y={z.y * 100:.0f}%\n"
+            f"w={z.w * 100:.0f}%  h={z.h * 100:.0f}%\n"
             f"{px_w} × {px_h} px"
         )
-        self.zone_var.set(info)
-        self._zone_lbl.config(fg=FG, font=("monospace", 9))
 
     # ── Layout actions ────────────────────────────────────────────────────────
 
@@ -521,7 +432,7 @@ class ZoneEditor:
                                  f"A layout named '{name}' already exists.",
                                  parent=self.root)
             return
-        # Rebuild dict preserving insertion order, key replaced in-place.
+        # Rebuild dict preserving insertion order with the key swapped in place
         new_layouts: Dict[str, Layout] = {}
         for k, v in self.layouts.items():
             if k == self.active_layout:
@@ -562,7 +473,7 @@ class ZoneEditor:
             "Rename Zone", "Zone name:", parent=self.root,
             initialvalue=z.name,
         )
-        if name is not None:   # None means the user clicked Cancel
+        if name is not None:   # None = user cancelled
             z.name = name
             self._update_info()
             self._redraw()
@@ -596,10 +507,10 @@ class ZoneEditor:
         """Block until the editor closes.
 
         Returns (layouts, active_layout, opacity, shift_snap) on save,
-        or None if the editor was cancelled.
+        or None if cancelled.
         """
         if self._toplevel:
-            self.root.wait_window()   # integrated: yields to parent mainloop
+            self.root.wait_window()   # embedded: yields to parent mainloop
         else:
             self.root.mainloop()      # standalone: owns the event loop
         return self.result
