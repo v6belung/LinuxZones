@@ -26,19 +26,18 @@ An optional **Shift key** trigger is also available (disabled by default) — ho
 ## Installation
 
 ```bash
-git clone https://github.com/yourname/linuxzones.git
-cd linuxzones
+git clone https://github.com/v6belung/LinuxZones.git
+cd LinuxZones
 bash install.sh
 ```
 
 The installer will:
 
 1. Install system packages (`python3-xlib`, `python3-tk`, `python3-pil`, `wmctrl`, etc.) via your package manager.
-2. Install `pystray` via pip.
-3. Generate the tray icon (`icon.png`).
-4. Create a **double-clickable desktop shortcut** (`~/Desktop/LinuxZones.desktop`).
-5. Add LinuxZones to **autostart** so it runs automatically on every login (`~/.config/autostart/`).
-6. Create a `linuxzones` command in `/usr/local/bin` for optional terminal use.
+2. Generate the app icon (`icon.png`).
+3. Create a **double-clickable desktop shortcut** (`~/Desktop/LinuxZones.desktop`).
+4. Add LinuxZones to **autostart** so it runs automatically on every login (`~/.config/autostart/`).
+5. Create a `linuxzones` command in `/usr/local/bin` for optional terminal use.
 
 ---
 
@@ -46,95 +45,9 @@ The installer will:
 
 **Double-click** the `LinuxZones` icon on your desktop.
 
-The app starts silently in the background and places an icon in your **system tray** (notification area). That's it — you can start snapping windows immediately.
+The app starts silently in the background. That's it — you can start snapping windows immediately.
 
 > If the desktop icon shows an "Allow Launching?" dialog, right-click it and choose **Allow Launching**, then double-click again. This is a one-time Cinnamon security prompt.
-
----
-
-## Configuring zones
-
-**Double-click the desktop icon** while LinuxZones is already running to open the **Layout Editor**. Or run `linuxzones editor` from a terminal.
-
-### The editor interface
-
-```
-┌────────────────────┬──────────────────────────────────────┐
-│ LAYOUTS            │                                      │
-│  ● ultrawide-8-16-8│   (scaled screen preview)            │
-│    halves          │                                      │
-│    thirds          │  ┌────────┬──────────────┬──────┐   │
-│  [New]    [Rename] │  │        │              │      │   │
-│  [Dup]    [Delete] │  │  left  │    center    │right │   │
-│                    │  │  25%×100% │  50%×100% │ 25%  │   │
-│ PRESETS            │  └────────┴──────────────┴──────┘   │
-│  [ultrawide-8-16-8]│                                      │
-│  [halves]          │                                      │
-│  [thirds]          │                                      │
-│  [quad]            │                                      │
-│  [primary-sidebar] │                                      │
-│                    │                                      │
-│ SELECTED ZONE      │                                      │
-│  Zone 1  ·  left   │                                      │
-│  x   0.0%  y  0.0% │                                      │
-│  w  25.0%  h 100.0%│                                      │
-│  480 × 1080 px     │                                      │
-│  [Rename][Delete]  │                                      │
-│                    │                                      │
-│ SETTINGS           │                                      │
-│  ☐ Shift key snap  │                                      │
-│                    │                                      │
-│ OVERLAY OPACITY    │                                      │
-│  [─────●─────] 50% │                                      │
-├────────────────────┴──────────────────── ────────────────┤
-│                              [Cancel]  [Save & Close]    │
-└──────────────────────────────────────────────────────────┘
-```
-
-### Drawing zones
-
-1. **Click and drag** on the preview canvas to draw a new zone rectangle.
-2. Zones snap to a 5% grid automatically.
-3. Zones can overlap — whichever zone the cursor is inside when you release right-click is the one that receives the window.
-4. **Left-click** an existing zone to select it and see its pixel dimensions.
-5. **Right-click** a zone in the editor (or click **Delete Zone**) to remove it.
-
-### Overlay opacity
-
-The **Overlay opacity** slider in the editor controls how visible the zone overlay is during snapping. Drag to adjust from 10% (nearly invisible) to 90% (nearly solid). Click **Save & Close** to apply.
-
-### Managing layouts
-
-| Action | How |
-|---|---|
-| Switch active layout | Click a name in the Layouts list |
-| Create new layout | Click **New**, enter a name |
-| Copy a layout | Click **Duplicate** |
-| Rename a layout | Click **Rename** |
-| Delete a layout | Click **Delete** (at least one must remain) |
-| Apply a preset | Click any preset name — it replaces the current layout's zones |
-
-### Built-in presets
-
-| Preset | Description |
-|---|---|
-| `ultrawide-8-16-8` | **Default.** 32:9 screen split 8\|16\|8 — side panels at 25%, centre at 50% |
-| `halves` | Left half / right half |
-| `thirds` | Three equal vertical columns |
-| `quad` | Four equal quadrants |
-| `primary-sidebar` | 65% main area + two sidebar slots on the right |
-
-### Zone coordinates
-
-Zones are stored as fractions of the screen (0.0–1.0), so layouts are resolution-independent and survive monitor changes. The editor shows the pixel dimensions for your current resolution as a reference.
-
-```
-x=0.00, y=0.00, w=0.50, h=1.00  →  left half of screen
-x=0.50, y=0.00, w=0.50, h=1.00  →  right half of screen
-x=0.00, y=0.00, w=1.00, h=0.50  →  top half of screen
-```
-
-Configuration is saved to `~/.config/linuxzones/config.json` and is human-editable.
 
 ---
 
@@ -160,6 +73,53 @@ Enable **Shift key snap** in the Layout Editor → **Settings** section.
 4. **Release Shift** — the window snaps to that zone.
 
 Both triggers are independent. Right-click always works regardless of the Shift setting.
+
+---
+
+## Configuring zones
+
+**Double-click the desktop icon** while LinuxZones is already running to open the **Layout Editor**. Or run `linuxzones editor` from a terminal.
+
+### Drawing zones
+
+1. **Click and drag** on the preview canvas to draw a new zone rectangle.
+2. Zones snap to a 5% grid automatically.
+3. Zones can overlap — whichever zone the cursor is inside when you release is the one that receives the window.
+4. **Left-click** an existing zone to select it and see its dimensions.
+5. **Right-click** a zone on the canvas (or click **Delete Zone**) to remove it.
+
+### Managing layouts
+
+| Action | How |
+|---|---|
+| Switch active layout | Click a name in the Layouts list |
+| Create new layout | Click **New**, enter a name |
+| Copy a layout | Click **Duplicate** |
+| Rename a layout | Click **Rename** (or double-click the name in the list) |
+| Delete a layout | Click **Delete** (at least one must remain) |
+| Apply a preset | Click any preset name — it replaces the current layout's zones |
+
+### Built-in presets
+
+| Preset | Description |
+|---|---|
+| `ultrawide-8-16-8` | **Default.** 32:9 screen split 8\|16\|8 — side panels at 25%, centre at 50% |
+| `halves` | Left half / right half |
+| `thirds` | Three equal vertical columns |
+| `quad` | Four equal quadrants |
+| `primary-sidebar` | 65% main area + two sidebar slots on the right |
+
+### Zone coordinates
+
+Zones are stored as fractions of the screen (0.0–1.0), so layouts are resolution-independent and survive monitor changes. The editor shows pixel dimensions for your current resolution as a reference.
+
+```
+x=0.00, y=0.00, w=0.50, h=1.00  →  left half of screen
+x=0.50, y=0.00, w=0.50, h=1.00  →  right half of screen
+x=0.00, y=0.00, w=1.00, h=0.50  →  top half of screen
+```
+
+Configuration is saved to `~/.config/linuxzones/config.json` and is human-editable.
 
 ---
 
@@ -192,8 +152,6 @@ Zones are defined relative to the full X11 screen, which spans all monitors in a
 
 ## Updating LinuxZones
 
-After pulling new files, re-run the installer:
-
 ```bash
 git pull
 bash install.sh
@@ -210,14 +168,12 @@ Or just log out and back in — autostart will launch the new version.
 
 ---
 
-## Command-line usage (optional)
-
-The installer also creates a `linuxzones` shell command:
+## Command-line usage
 
 ```bash
-linuxzones                  # start (same as double-clicking the icon)
-linuxzones editor           # open layout editor without starting the tray app
-linuxzones list             # list saved layouts
+linuxzones                       # start (same as double-clicking the icon)
+linuxzones editor                # open layout editor standalone
+linuxzones list                  # list saved layouts
 linuxzones run --layout thirds   # start with a specific layout override
 linuxzones --version
 ```
@@ -274,6 +230,7 @@ cat ~/.local/share/linuxzones/linuxzones.log
 {
   "active_layout": "ultrawide-8-16-8",
   "overlay_opacity": 0.5,
+  "shift_snap": false,
   "layouts": {
     "ultrawide-8-16-8": {
       "name": "ultrawide-8-16-8",
