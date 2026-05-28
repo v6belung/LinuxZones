@@ -92,9 +92,14 @@ class ZoneEditor:
         main.pack(fill="both", expand=True)
 
         # ── Left sidebar ──────────────────────────────────────────────────
-        sidebar = ttk.Frame(main, width=240)
-        sidebar.pack(side="left", fill="y", padx=(0, 10))
-        sidebar.pack_propagate(False)
+        # Do NOT use pack_propagate(False) + fill="y" here.  Those two together
+        # clamp the sidebar to the window height (which is driven by the canvas),
+        # clipping the bottom sections on wide-aspect-ratio screens where the
+        # canvas is shorter than the sidebar's content.  Instead, let the sidebar
+        # report its natural height; the window will grow to the taller of
+        # sidebar vs canvas.
+        sidebar = ttk.Frame(main)
+        sidebar.pack(side="left", anchor="nw", padx=(0, 10))
 
         # LAYOUTS ---------------------------------------------------------
         lf_layouts = ttk.LabelFrame(sidebar, text="Layouts")
