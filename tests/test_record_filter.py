@@ -85,15 +85,15 @@ def test_button_press_always_forwarded(make_daemon, monkeypatch):
     assert _run_callback(monkeypatch, d, _reply(BUTTON_PRESS)) == [BUTTON_PRESS]
 
 
-# --------------------------------------------------- keyboard gated by shift_snap
+# --------------------------------------------------- keyboard gated by mod_snap
 
-def test_keyboard_filtered_when_shift_disabled(make_daemon, monkeypatch):
-    d = make_daemon(state=_State.DRAGGING, shift_snap=False)
+def test_keyboard_filtered_when_modifier_disabled(make_daemon, monkeypatch):
+    d = make_daemon(state=_State.DRAGGING, mod_snap=False)
     assert _run_callback(monkeypatch, d, _reply(KEY_PRESS, KEY_RELEASE)) == []
 
 
-def test_keyboard_forwarded_when_shift_enabled(make_daemon, monkeypatch):
-    d = make_daemon(state=_State.DRAGGING, shift_snap=True)
+def test_keyboard_forwarded_when_modifier_enabled(make_daemon, monkeypatch):
+    d = make_daemon(state=_State.DRAGGING, mod_snap=True)
     handled = _run_callback(monkeypatch, d, _reply(KEY_PRESS, KEY_RELEASE))
     assert handled == [KEY_PRESS, KEY_RELEASE]
 
@@ -102,14 +102,14 @@ def test_keyboard_forwarded_when_shift_enabled(make_daemon, monkeypatch):
 
 def test_mixed_packet_forwards_correct_subset_when_idle(make_daemon, monkeypatch):
     """A packet with motion + button at IDLE: drop the motion, keep the button."""
-    d = make_daemon(state=_State.IDLE, shift_snap=False)
+    d = make_daemon(state=_State.IDLE, mod_snap=False)
     handled = _run_callback(monkeypatch, d,
                             _reply(MOTION, BUTTON_PRESS, MOTION))
     assert handled == [BUTTON_PRESS]
 
 
 def test_mixed_packet_forwards_all_relevant_while_dragging(make_daemon, monkeypatch):
-    d = make_daemon(state=_State.DRAGGING, shift_snap=False)
+    d = make_daemon(state=_State.DRAGGING, mod_snap=False)
     handled = _run_callback(monkeypatch, d,
                             _reply(MOTION, BUTTON_PRESS, MOTION))
     assert handled == [MOTION, BUTTON_PRESS, MOTION]

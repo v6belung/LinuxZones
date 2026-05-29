@@ -4,8 +4,8 @@ Uses ttk widgets throughout so the dialog inherits the desktop's native theme.
 The only non-system colours are inside the zone-preview canvas (dark background
 and brightly coloured zone rectangles — purely visual, not UI chrome).
 
-run() returns (layouts, active_layout, opacity, shift_snap) on save,
-or None on cancel.
+run() returns (layouts, active_layout, opacity, modifier_snap, modifier_key)
+on save, or None on cancel.
 """
 
 import copy
@@ -13,9 +13,13 @@ import tkinter as tk
 from tkinter import ttk, simpledialog, messagebox
 from typing import Dict, List, Optional, Tuple
 
-from zones import Zone, Layout, DEFAULT_LAYOUTS
+from zones import Zone, Layout, DEFAULT_LAYOUTS, VALID_MODIFIERS, _coerce_modifier
 
 GRID = 0.05   # snap-to-grid step (5 % of screen)
+
+# Canonical modifier name (as stored in config) ↔ human-friendly dropdown label.
+_MOD_LABELS = {m: m.capitalize() for m in VALID_MODIFIERS}   # "shift" → "Shift"
+_LABEL_TO_MOD = {label: m for m, label in _MOD_LABELS.items()}
 
 # Colours used only inside the zone-preview canvas
 _ZONE_COLORS = ["#4a90d9", "#7b68ee", "#48c774", "#ff9f43", "#ff6b35", "#e84393"]
@@ -33,12 +37,13 @@ class ZoneEditor:
     ----------
     layouts, active_layout, screen_w/h : as usual
     opacity        : current overlay opacity (0.0–1.0)
-    shift_snap     : whether Shift-key snap is currently enabled
+    modifier_snap  : whether keyboard-modifier snap is currently enabled
+    modifier_key   : which modifier triggers it ("shift", "alt" or "ctrl")
     master         : parent tk.Tk for embedded Toplevel mode;
                      None = standalone (creates its own Tk root)
 
-    run() returns (layouts, active_layout, opacity, shift_snap) on save,
-    or None on cancel.
+    run() returns (layouts, active_layout, opacity, modifier_snap, modifier_key)
+    on save, or None on cancel.
     """
 
     def __init__(
@@ -48,7 +53,8 @@ class ZoneEditor:
         screen_w: int,
         screen_h: int,
         opacity: float = 0.5,
-        shift_snap: bool = False,
+        modifier_snap: bool = False,
+        modifier_key: str = "shift",
         master: Optional[tk.Tk] = None,
     ):
         self.layouts       = copy.deepcopy(layouts)
@@ -76,8 +82,10 @@ class ZoneEditor:
         self.root.title("LinuxZones — Layout Editor")
         self.root.resizable(False, False)
 
-        self.opacity_var    = tk.IntVar(value=max(10, min(90, int(opacity * 100))))
-        self.shift_snap_var = tk.BooleanVar(value=shift_snap)
+        self.opacity_var  = tk.IntVar(value=max(10, min(90, int(opacity * 100))))
+        self.mod_snap_var = tk.BooleanVar(value=bool(modifier_snap))
+        self.mod_key_var  = tk.StringVar(
+            value=_MOD_LABELS[_coerce_modifier(modifier_key)])
 
         self._build()
         self._refresh_list()
@@ -165,24 +173,41 @@ class ZoneEditor:
 
         ttk.Checkbutton(
             lf_settings,
-            text="Shift key snap",
-            variable=self.shift_snap_var,
+            text="Keyboard modifier snap",
+            variable=self.mod_snap_var,
+            command=self._on_mod_toggle,
         ).pack(anchor="w", padx=6, pady=(6, 2))
         ttk.Label(
             lf_settings,
-            text="Hold Shift while dragging to snap\n(alternative to right-click)",
+            text="Hold the chosen key while dragging to\nsnap (alternative to right-click)",
             justify="left",
         ).pack(anchor="w", padx=24, pady=(0, 2))
+
+        mod_row = ttk.Frame(lf_settings)
+        mod_row.pack(anchor="w", fill="x", padx=24, pady=(0, 2))
+        ttk.Label(mod_row, text="Modifier:").pack(side="left", padx=(0, 4))
+        self.mod_key_combo = ttk.Combobox(
+            mod_row,
+            textvariable=self.mod_key_var,
+            values=[_MOD_LABELS[m] for m in VALID_MODIFIERS],
+            state="readonly",
+            width=8,
+        )
+        self.mod_key_combo.pack(side="left")
+
         ttk.Label(
             lf_settings,
             text="Privacy: enabling this makes LinuxZones\n"
                  "monitor key presses globally so it can\n"
-                 "detect Shift. Keystrokes are never stored\n"
-                 "or sent anywhere. Leave off to monitor\n"
-                 "mouse buttons only.",
+                 "detect the modifier. Keystrokes are never\n"
+                 "stored or sent anywhere. Leave off to\n"
+                 "monitor mouse buttons only.",
             justify="left",
             foreground="#888888",
         ).pack(anchor="w", padx=24, pady=(0, 6))
+
+        # Reflect the initial enabled/disabled state of the dropdown.
+        self._on_mod_toggle()
 
         # OVERLAY OPACITY -------------------------------------------------
         lf_opacity = ttk.LabelFrame(sidebar, text="Overlay Opacity")
@@ -247,6 +272,14 @@ class ZoneEditor:
         # ttk.Scale command callback passes the value as a string; use the
         # IntVar instead for a clean integer display.
         self._opacity_lbl.config(text=f"{self.opacity_var.get()}%")
+
+    # ── Modifier snap ───────────────────────────────────────────────────────────
+
+    def _on_mod_toggle(self) -> None:
+        """Grey out the modifier dropdown while modifier snap is disabled."""
+        # "readonly" = pick-from-list enabled; "disabled" = greyed out.
+        self.mod_key_combo.config(
+            state="readonly" if self.mod_snap_var.get() else "disabled")
 
     # ── Layout list ───────────────────────────────────────────────────────────
 
@@ -514,15 +547,16 @@ class ZoneEditor:
             self.layouts,
             self.active_layout,
             self.opacity_var.get() / 100,
-            self.shift_snap_var.get(),
+            self.mod_snap_var.get(),
+            _LABEL_TO_MOD.get(self.mod_key_var.get(), "shift"),
         )
         self.root.destroy()
 
     def run(self):
         """Block until the editor closes.
 
-        Returns (layouts, active_layout, opacity, shift_snap) on save,
-        or None if cancelled.
+        Returns (layouts, active_layout, opacity, modifier_snap, modifier_key)
+        on save, or None if cancelled.
         """
         if self._toplevel:
             self.root.wait_window()   # embedded: yields to parent mainloop

@@ -57,7 +57,7 @@ def test_b3_press_while_dragging_shows_overlay(make_daemon):
     d._handle(make_event(X.ButtonPress, detail=3, root_x=100, root_y=500))
 
     assert d._state == _State.OVERLAY_ACTIVE
-    assert d._overlay_by_shift is False
+    assert d._overlay_by_mod is False
     msgs = drain(d.ui_queue)
     assert ("show",) in msgs
     assert ("highlight", 0) in msgs       # x=100/1000 = 0.1 → left zone
@@ -74,7 +74,7 @@ def test_b3_press_ignored_when_not_dragging(make_daemon):
 
 def test_b3_release_snaps_and_returns_to_dragging(make_daemon):
     d = make_daemon(state=_State.OVERLAY_ACTIVE)
-    d._overlay_by_shift = False
+    d._overlay_by_mod = False
     d._b1_held = True
 
     # Release over the right-hand zone (x = 800/1000 = 0.8 → idx 1).
@@ -85,9 +85,20 @@ def test_b3_release_snaps_and_returns_to_dragging(make_daemon):
     assert d._state == _State.DRAGGING    # B1 still held → stay in drag
 
 
+def test_b3_release_with_unresolved_coords_snaps_to_highlighted_zone(make_daemon):
+    """A B3 release whose coords resolve to no zone still snaps to the
+    highlighted zone — same robustness the modifier path relies on."""
+    d = make_daemon(state=_State.OVERLAY_ACTIVE)
+    d._overlay_by_mod = False
+    d._b1_held = True
+    d._last_zone = 0
+    d._handle(make_event(X.ButtonRelease, detail=3, root_x=99999, root_y=99999))
+    assert d._snap_calls == [0]
+
+
 def test_b3_release_goes_idle_when_b1_already_released(make_daemon):
     d = make_daemon(state=_State.OVERLAY_ACTIVE)
-    d._overlay_by_shift = False
+    d._overlay_by_mod = False
     d._b1_held = False                    # left button was let go earlier
 
     d._handle(make_event(X.ButtonRelease, detail=3, root_x=200, root_y=500))

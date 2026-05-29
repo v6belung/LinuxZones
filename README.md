@@ -6,9 +6,9 @@ Window zone snapping for Linux — replicates the core FancyZones workflow from 
 
 **Interaction model:** drag a window with the left mouse button, then **hold right-click** to show the zone overlay. Move into the zone you want and **release right-click** to snap and resize the window to fill it. Release the left button at any point to cancel without snapping.
 
-An optional **Shift key** trigger is also available (disabled by default) — hold Shift while dragging to show the overlay, release Shift to snap. Enable it in the Layout Editor under **Settings**.
+An optional **keyboard modifier** trigger is also available (disabled by default) — hold your chosen modifier (**Shift**, **Alt**, or **Ctrl**) while dragging to show the overlay, release it to snap. Enable it and pick the modifier in the Layout Editor under **Settings**.
 
-> **Privacy note:** With the right-click trigger (the default) LinuxZones monitors mouse-button and motion events only. Enabling the Shift trigger additionally makes it monitor **key-press events globally** so it can detect Shift while you drag. Keystrokes are inspected in-process to check for the Shift key only — they are never recorded, stored, or transmitted anywhere. If you prefer LinuxZones not to see your keystrokes at all, leave the Shift trigger off and use right-click.
+> **Privacy note:** With the right-click trigger (the default) LinuxZones monitors mouse-button and motion events only. Enabling the modifier trigger additionally makes it monitor **key-press events globally** so it can detect the modifier while you drag. Keystrokes are inspected in-process to check for the chosen modifier only — they are never recorded, stored, or transmitted anywhere. If you prefer LinuxZones not to see your keystrokes at all, leave the modifier trigger off and use right-click.
 
 ---
 
@@ -61,18 +61,18 @@ The app starts silently in the background. That's it — you can start snapping 
 
 > **Quick snap:** a fast right-click (press + release) while dragging works the same way.
 
-### Shift key trigger (optional, disabled by default)
+### Keyboard modifier trigger (optional, disabled by default)
 
-Enable **Shift key snap** in the Layout Editor → **Settings** section.
+Enable **Keyboard modifier snap** in the Layout Editor → **Settings** section, then pick the modifier — **Shift**, **Alt**, or **Ctrl** — from the dropdown. (The dropdown is greyed out until you tick the checkbox.)
 
 1. Left-click and drag a window.
-2. **Press and hold Shift** — the zone overlay appears.
+2. **Press and hold your chosen modifier** — the zone overlay appears.
 3. Move the cursor over the desired zone.
-4. **Release Shift** — the window snaps to that zone.
+4. **Release the modifier** — the window snaps to that zone.
 
-Both triggers are independent. Right-click always works regardless of the Shift setting.
+Both triggers are independent. Right-click always works regardless of the modifier setting.
 
-> **Privacy:** the Shift trigger requires LinuxZones to monitor key-press events globally (in addition to the mouse) so it can tell when Shift is held during a drag. Keystrokes are only checked for the Shift key in-process and are never recorded, stored, or sent anywhere. Leave this setting off to keep input monitoring limited to the mouse.
+> **Privacy:** the modifier trigger requires LinuxZones to monitor key-press events globally (in addition to the mouse) so it can tell when the modifier is held during a drag. Keystrokes are only checked for the chosen modifier in-process and are never recorded, stored, or sent anywhere. Leave this setting off to keep input monitoring limited to the mouse.
 
 ---
 

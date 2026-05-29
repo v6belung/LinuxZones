@@ -9,6 +9,18 @@ import tempfile
 CONFIG_DIR = os.path.expanduser("~/.config/linuxzones")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
+# Keyboard modifiers that can trigger the overlay (canonical lowercase names).
+# The first entry is the default used when an unknown value is encountered.
+VALID_MODIFIERS: Tuple[str, ...] = ("shift", "alt", "ctrl")
+DEFAULT_MODIFIER = "shift"
+
+
+def _coerce_modifier(value) -> str:
+    """Return a valid canonical modifier name, defaulting on anything unknown."""
+    if isinstance(value, str) and value.lower() in VALID_MODIFIERS:
+        return value.lower()
+    return DEFAULT_MODIFIER
+
 
 @dataclass
 class Zone:
@@ -120,11 +132,17 @@ def _sanitize_zones(zones: List[Zone]) -> List[Zone]:
     return clean
 
 
-def load_config() -> Tuple[Dict[str, Layout], str, float, bool]:
-    """Returns (layouts, active_layout_name, overlay_opacity, shift_snap).
-    Falls back to defaults."""
+def load_config() -> Tuple[Dict[str, Layout], str, float, bool, str]:
+    """Returns (layouts, active_layout_name, overlay_opacity, modifier_snap,
+    modifier_key).  Falls back to defaults.
+
+    Backward compatibility: configs written before the generic-modifier feature
+    only have a boolean ``shift_snap`` key.  When the newer ``modifier_snap`` /
+    ``modifier_key`` keys are absent, a truthy legacy ``shift_snap`` is mapped
+    to (modifier_snap=True, modifier_key="shift").
+    """
     if not os.path.exists(CONFIG_FILE):
-        return dict(DEFAULT_LAYOUTS), "ultrawide-8-16-8", 0.5, False
+        return dict(DEFAULT_LAYOUTS), "ultrawide-8-16-8", 0.5, False, DEFAULT_MODIFIER
     try:
         with open(CONFIG_FILE) as f:
             data = json.load(f)
@@ -140,24 +158,33 @@ def load_config() -> Tuple[Dict[str, Layout], str, float, bool]:
             active = next(iter(layouts))
         opacity = float(data.get("overlay_opacity", 0.5))
         opacity = max(0.1, min(0.9, opacity))
-        shift_snap = bool(data.get("shift_snap", False))
-        return layouts, active, opacity, shift_snap
+
+        # New keys take precedence; fall back to the legacy shift_snap boolean.
+        legacy_shift = bool(data.get("shift_snap", False))
+        modifier_snap = bool(data.get("modifier_snap", legacy_shift))
+        modifier_key = _coerce_modifier(data.get("modifier_key", DEFAULT_MODIFIER))
+        return layouts, active, opacity, modifier_snap, modifier_key
     except Exception as e:
         print(f"[linuxzones] Config load error: {e}. Using defaults.")
-        return dict(DEFAULT_LAYOUTS), "ultrawide-8-16-8", 0.5, False
+        return dict(DEFAULT_LAYOUTS), "ultrawide-8-16-8", 0.5, False, DEFAULT_MODIFIER
 
 
 def save_config(
     layouts: Dict[str, Layout],
     active_layout: str,
     opacity: float = 0.5,
-    shift_snap: bool = False,
+    modifier_snap: bool = False,
+    modifier_key: str = DEFAULT_MODIFIER,
 ) -> None:
     os.makedirs(CONFIG_DIR, exist_ok=True)
     payload = {
         "active_layout": active_layout,
         "overlay_opacity": round(opacity, 2),
-        "shift_snap": shift_snap,
+        "modifier_snap": bool(modifier_snap),
+        "modifier_key": _coerce_modifier(modifier_key),
+        # Keep writing the legacy key so a config saved by a new version can
+        # still be read by an older binary (graceful downgrade).
+        "shift_snap": bool(modifier_snap) and _coerce_modifier(modifier_key) == "shift",
         "layouts": {name: l.to_dict() for name, l in layouts.items()},
     }
     # Atomic write: serialise to a temp file in the same directory, fsync it,

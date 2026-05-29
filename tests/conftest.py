@@ -39,8 +39,8 @@ def make_daemon(halves_layout):
     inert stubs so `_handle` can run end-to-end; tests that care about them
     override the stub and inspect what was recorded.
     """
-    def _factory(*, state=_State.IDLE, shift_snap=False, layout=None,
-                 screen_w=1000, screen_h=1000):
+    def _factory(*, state=_State.IDLE, mod_snap=False, mod_key="shift",
+                 layout=None, screen_w=1000, screen_h=1000):
         d = object.__new__(ZoneDaemon)
 
         d.layout   = layout if layout is not None else halves_layout
@@ -57,12 +57,13 @@ def make_daemon(halves_layout):
         d._b1_held            = False
         d._swallow_b1_release = False
 
-        # Shift-snap state
-        d._shift_snap         = shift_snap
-        d._shift_held         = False
-        d._overlay_by_shift   = False
-        d._shift_last_release = 0.0
-        d._shift_keycodes     = frozenset({50})   # pretend keycode 50 == Shift
+        # Modifier-snap state
+        d._mod_snap         = mod_snap
+        d._mod_key          = mod_key
+        d._mod_held         = False
+        d._overlay_by_mod   = False
+        d._mod_last_release_time = -1
+        d._mod_keycodes     = frozenset({50})   # pretend keycode 50 == the modifier
 
         # RECORD context bookkeeping
         d._ctx = None
@@ -73,6 +74,12 @@ def make_daemon(halves_layout):
         # tests stub out via monkeypatch).
         d.record_dpy = SimpleNamespace(display=None)
 
+        # Fake control display: keysym_to_keycode is the identity, so distinct
+        # keysyms (XK_Shift_L vs XK_Alt_L ...) yield distinct, deterministic
+        # "keycodes" for _resolve_mod_keycodes / update_mod_snap tests.  No
+        # real X connection is opened.
+        d.ctrl_dpy = SimpleNamespace(keysym_to_keycode=lambda ks: ks)
+
         # Inert stubs for the X11 side effects.  Tests override as needed.
         d._managed_window_at = lambda: SimpleNamespace(id=0xABCDEF)
         d._snap = lambda zone_idx: d.__dict__.setdefault("_snap_calls", []).append(zone_idx)
@@ -82,9 +89,14 @@ def make_daemon(halves_layout):
     return _factory
 
 
-def make_event(etype, detail=0, root_x=0, root_y=0):
-    """Build a stand-in for an Xlib event object as `_handle` consumes it."""
-    return SimpleNamespace(type=etype, detail=detail, root_x=root_x, root_y=root_y)
+def make_event(etype, detail=0, root_x=0, root_y=0, time=0):
+    """Build a stand-in for an Xlib event object as `_handle` consumes it.
+
+    ``time`` is the X server timestamp (ms).  Auto-repeat is modelled by giving
+    a KeyRelease and its following KeyPress the *same* ``time``.
+    """
+    return SimpleNamespace(type=etype, detail=detail,
+                           root_x=root_x, root_y=root_y, time=time)
 
 
 def drain(q: queue.Queue):

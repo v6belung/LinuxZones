@@ -9,9 +9,9 @@ Interaction model
   Quick right-click          → overlay flashes for one frame, same snap on release.
   Release left button        → cancel drag, overlay hides (no snap).
 
-  Shift key snap (optional, disabled by default):
-  Hold Shift while left-dragging → zone overlay appears.
-  Release Shift                  → snaps to the highlighted zone.
+  Keyboard modifier snap (optional, disabled by default):
+  Hold the chosen modifier (Shift, Alt or Ctrl) while left-dragging → overlay.
+  Release the modifier                                               → snaps.
   This is an alternative to right-click, enabled via the Layout Editor.
 
 The daemon runs on a background thread and communicates with the Tkinter
@@ -35,6 +35,25 @@ from zones import Layout
 DRAG_THRESHOLD = 8     # px of movement before left-drag is considered active
 SNAP_DELAY     = 0.10  # seconds to wait after faking button-1 release
 
+# Canonical modifier name → the X11 keysym names whose hardware keycodes should
+# trigger the overlay.  Both left and right variants are included so either
+# physical key works.
+_MODIFIER_KEYSYMS = {
+    "shift": ("XK_Shift_L",   "XK_Shift_R"),
+    "alt":   ("XK_Alt_L",     "XK_Alt_R"),
+    "ctrl":  ("XK_Control_L", "XK_Control_R"),
+}
+
+
+def _ev_time(event) -> int:
+    """X server timestamp (ms) of a key/button event, or -2 if unavailable.
+
+    The sentinel is negative and distinct from the daemon's initial
+    "no release seen" value (-1) so a missing timestamp never accidentally
+    compares equal to it and mis-classifies a genuine press as auto-repeat.
+    """
+    return getattr(event, "time", -2)
+
 
 class _State:
     IDLE           = 0
@@ -44,7 +63,8 @@ class _State:
 
 
 class ZoneDaemon:
-    def __init__(self, layout: Layout, ui_queue: queue.Queue, shift_snap: bool = False):
+    def __init__(self, layout: Layout, ui_queue: queue.Queue,
+                 mod_snap: bool = False, mod_key: str = "shift"):
         self.layout   = layout
         self.ui_queue = ui_queue
 
@@ -81,31 +101,42 @@ class ZoneDaemon:
         # echo can be identified and swallowed without corrupting state.
         self._swallow_b1_release: bool    = False
 
-        # Shift-key snap (optional feature, disabled by default)
+        # Keyboard modifier snap (optional feature, disabled by default)
         # CPython bool assignment is atomic; no lock needed for this flag.
-        self._shift_snap:         bool    = shift_snap
-        self._shift_held:         bool    = False
-        # True when the Shift key (not B3) triggered the current overlay.
+        self._mod_snap:         bool    = mod_snap
+        self._mod_key:          str     = mod_key if mod_key in _MODIFIER_KEYSYMS else "shift"
+        # True while we believe the modifier is physically held down.  Used to
+        # dedupe events so a genuine press always registers exactly once.
+        self._mod_held:         bool    = False
+        # True when the modifier key (not B3) triggered the current overlay.
         # Determines which release event triggers the snap.
-        self._overlay_by_shift:   bool    = False
-        # Timestamp of the last Shift key-release, used to suppress X11
-        # auto-repeat (which fires rapid Release+Press pairs).
-        self._shift_last_release: float   = 0.0
+        self._overlay_by_mod:   bool    = False
+        # X server timestamp (ms) of the last modifier KeyRelease.  X auto-repeat
+        # is delivered as a KeyRelease immediately followed by a KeyPress that
+        # share the SAME server timestamp; a genuine press never shares its
+        # timestamp with the preceding release.  Comparing timestamps lets us
+        # ignore auto-repeat precisely, without a wall-clock window that would
+        # also swallow legitimate quick taps.  -1 = no release seen yet.
+        self._mod_last_release_time: int = -1
 
-        # Resolve Shift_L / Shift_R hardware keycodes once at startup.
-        try:
-            from Xlib import XK as _xk
-            _sl = self.ctrl_dpy.keysym_to_keycode(_xk.XK_Shift_L)
-            _sr = self.ctrl_dpy.keysym_to_keycode(_xk.XK_Shift_R)
-            self._shift_keycodes: frozenset = frozenset(c for c in (_sl, _sr) if c)
-        except Exception:
-            self._shift_keycodes = frozenset()
+        # Resolve the chosen modifier's hardware keycodes once at startup.
+        self._mod_keycodes: frozenset = self._resolve_mod_keycodes(self._mod_key)
 
         # Active RECORD context handle (valid while record_enable_context is
         # blocking) and a flag used to break out of it intentionally when the
-        # event subscription must change.  See run() / update_shift_snap().
+        # event subscription must change.  See run() / update_mod_snap().
         self._ctx = None
         self._reconfigure_requested: bool = False
+
+    def _resolve_mod_keycodes(self, mod_key: str) -> frozenset:
+        """Map a canonical modifier name to its hardware keycodes (L and R)."""
+        names = _MODIFIER_KEYSYMS.get(mod_key, _MODIFIER_KEYSYMS["shift"])
+        try:
+            from Xlib import XK as _xk
+            codes = (self.ctrl_dpy.keysym_to_keycode(getattr(_xk, n)) for n in names)
+            return frozenset(c for c in codes if c)
+        except Exception:
+            return frozenset()
 
     # ------------------------------------------------------------------ window helpers
 
@@ -269,21 +300,41 @@ class ZoneDaemon:
 
     # ------------------------------------------------------------------ event handling
 
+    def _release_zone(self, event) -> Optional[int]:
+        """Zone to snap to when a trigger (B3 or modifier) is released.
+
+        Prefer the zone the overlay is currently HIGHLIGHTING (``_last_zone``,
+        set on the trigger press and kept current by motion events) over
+        re-deriving it from the release event's own coordinates.  A quick
+        modifier *tap* could release with coordinates that don't resolve to a
+        zone, which made the overlay flash without snapping; the highlighted
+        zone is always what the user is aiming at and what the overlay shows.
+        Fall back to the event coordinates only when nothing is highlighted.
+        """
+        if self._last_zone is not None:
+            return self._last_zone
+        return self.layout.zone_at(
+            event.root_x, event.root_y, self.screen_w, self.screen_h)
+
     def _handle(self, event) -> None:
         etype = event.type
 
-        # ---- Keyboard events (Shift key snap) ----------------------------
+        # ---- Keyboard events (modifier key snap) -------------------------
         if etype == X.KeyPress:
             kc = event.detail
-            if kc not in self._shift_keycodes or not self._shift_snap:
+            if kc not in self._mod_keycodes or not self._mod_snap:
                 return
-            # Auto-repeat guard: X11 sends rapid Release+Press pairs for held
-            # keys; ignore a press that comes within 50 ms of the last release.
-            if time.time() - self._shift_last_release < 0.05:
+            # Ignore auto-repeat: an auto-repeat KeyPress carries the same X
+            # server timestamp as the KeyRelease that immediately preceded it.
+            # Also dedupe via _mod_held so a repeat can never re-open the overlay
+            # after a snap.  A genuine first press (the only one that should open
+            # the overlay) passes both checks — exactly like a B3 press, so a
+            # quick tap works the same as a quick right-click.
+            if self._mod_held or _ev_time(event) == self._mod_last_release_time:
                 return
-            self._shift_held = True
+            self._mod_held = True
             if self._state == _State.DRAGGING:
-                self._overlay_by_shift = True
+                self._overlay_by_mod = True
                 self._state = _State.OVERLAY_ACTIVE
                 zone_idx = self.layout.zone_at(
                     event.root_x, event.root_y, self.screen_w, self.screen_h)
@@ -294,17 +345,16 @@ class ZoneDaemon:
 
         elif etype == X.KeyRelease:
             kc = event.detail
-            if kc not in self._shift_keycodes:
+            if kc not in self._mod_keycodes:
                 return
-            self._shift_last_release = time.time()
-            self._shift_held = False
-            if self._state == _State.OVERLAY_ACTIVE and self._overlay_by_shift:
-                # Shift released → snap and hide overlay.
-                zone_idx = self.layout.zone_at(
-                    event.root_x, event.root_y, self.screen_w, self.screen_h)
+            self._mod_last_release_time = _ev_time(event)
+            self._mod_held = False
+            if self._state == _State.OVERLAY_ACTIVE and self._overlay_by_mod:
+                # Modifier released → snap and hide overlay.
+                zone_idx = self._release_zone(event)
                 self.ui_queue.put(("hide",))
                 self._state = _State.DRAGGING
-                self._overlay_by_shift = False
+                self._overlay_by_mod = False
                 if zone_idx is not None:
                     self._snap(zone_idx)
                 if not self._b1_held:
@@ -326,9 +376,9 @@ class ZoneDaemon:
 
             elif btn == 3 and self._state in (_State.DRAGGING, _State.OVERLAY_ACTIVE):
                 # Right pressed while dragging → show overlay (B3 takes ownership;
-                # any in-progress Shift-triggered overlay is handed over to B3).
+                # any in-progress modifier-triggered overlay is handed over to B3).
                 self._state = _State.OVERLAY_ACTIVE
-                self._overlay_by_shift = False
+                self._overlay_by_mod = False
                 zone_idx = self.layout.zone_at(
                     event.root_x, event.root_y, self.screen_w, self.screen_h)
                 self._last_zone = zone_idx
@@ -338,10 +388,9 @@ class ZoneDaemon:
         elif etype == X.ButtonRelease:
             btn = event.detail
 
-            if btn == 3 and self._state == _State.OVERLAY_ACTIVE and not self._overlay_by_shift:
+            if btn == 3 and self._state == _State.OVERLAY_ACTIVE and not self._overlay_by_mod:
                 # Right released (and overlay was B3-triggered) → snap, hide overlay.
-                zone_idx = self.layout.zone_at(
-                    event.root_x, event.root_y, self.screen_w, self.screen_h)
+                zone_idx = self._release_zone(event)
                 self.ui_queue.put(("hide",))
                 self._state = _State.DRAGGING
                 if zone_idx is not None:
@@ -412,8 +461,8 @@ class ZoneDaemon:
             if raw_type == X.MotionNotify and self._state == _State.IDLE:
                 data = data[32:]
                 continue
-            # Skip keyboard events entirely when Shift-snap is disabled.
-            if raw_type in (X.KeyPress, X.KeyRelease) and not self._shift_snap:
+            # Skip keyboard events entirely when modifier snap is disabled.
+            if raw_type in (X.KeyPress, X.KeyRelease) and not self._mod_snap:
                 data = data[32:]
                 continue
             try:
@@ -431,12 +480,12 @@ class ZoneDaemon:
         """Build the RECORD range spec for the current settings.
 
         Keyboard events (KeyPress=2, KeyRelease=3) are requested ONLY when
-        shift_snap is enabled.  When it is off — the default — the range starts
-        at ButtonPress=4, so keystrokes typed in other applications are never
-        delivered to this process at all (principle of least privilege: we do
-        not subscribe to a global keystroke feed we have no use for).
+        modifier snap is enabled.  When it is off — the default — the range
+        starts at ButtonPress=4, so keystrokes typed in other applications are
+        never delivered to this process at all (principle of least privilege:
+        we do not subscribe to a global keystroke feed we have no use for).
         """
-        first_event = X.KeyPress if self._shift_snap else X.ButtonPress
+        first_event = X.KeyPress if self._mod_snap else X.ButtonPress
         return {
             "core_requests":    (0, 0),
             "core_replies":     (0, 0),
@@ -444,7 +493,7 @@ class ZoneDaemon:
             "ext_replies":      (0, 0, 0, 0),
             "delivered_events": (0, 0),
             # ButtonPress=4, ButtonRelease=5, MotionNotify=6.
-            # KeyPress=2 / KeyRelease=3 are included only when shift_snap is on.
+            # KeyPress=2 / KeyRelease=3 are included only when modifier snap is on.
             "device_events":    (first_event, X.MotionNotify),
             "errors":           (0, 0),
             "client_started":   False,
@@ -456,8 +505,8 @@ class ZoneDaemon:
 
         record_enable_context() blocks until another thread calls
         record_disable_context() on the same context XID.  We exploit that to
-        rebuild the context with a new event range when shift_snap is toggled,
-        so the keyboard subscription always matches the setting.  The loop only
+        rebuild the context with a new event range when modifier snap is
+        toggled, so the keyboard subscription always matches the setting.  The loop only
         re-creates the context for an intentional reconfigure; any other return
         means the display went away, so we stop rather than busy-loop.
         """
@@ -490,16 +539,23 @@ class ZoneDaemon:
         """Thread-safe layout swap."""
         self.layout = layout
 
-    def update_shift_snap(self, enabled: bool) -> None:
-        """Toggle shift-snap (called from the UI thread after the editor saves).
+    def update_mod_snap(self, enabled: bool, mod_key: str = "shift") -> None:
+        """Toggle modifier snap and/or change the modifier key.
 
-        Rebuilds the RECORD context so the keyboard-event subscription matches
-        the new setting: keystrokes from other applications are intercepted
-        only while shift_snap is enabled.
+        Called from the UI thread after the editor saves.  Re-resolves the
+        modifier's keycodes immediately (cheap, no context change required when
+        only the key changes, since the RECORD range is identical for any
+        modifier).  When the *enabled* flag flips, the RECORD context is rebuilt
+        so the keyboard-event subscription matches the new setting: keystrokes
+        from other applications are intercepted only while modifier snap is on.
         """
-        if enabled == self._shift_snap:
+        mod_key = mod_key if mod_key in _MODIFIER_KEYSYMS else "shift"
+        self._mod_key = mod_key
+        self._mod_keycodes = self._resolve_mod_keycodes(mod_key)
+
+        if enabled == self._mod_snap:
             return
-        self._shift_snap = enabled
+        self._mod_snap = enabled
         self._reconfigure_requested = True
         # Break the blocking record_enable_context in the daemon thread so run()
         # rebuilds the context.  Disabling from a separate display connection
@@ -512,4 +568,4 @@ class ZoneDaemon:
                 self.ctrl_dpy.record_disable_context(ctx)
                 self.ctrl_dpy.flush()
             except Exception as e:
-                print(f"[linuxzones] shift_snap reconfigure failed: {e}")
+                print(f"[linuxzones] modifier snap reconfigure failed: {e}")
