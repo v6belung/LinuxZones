@@ -146,7 +146,11 @@ class LinuxZonesApp:
                     return
         except queue.Empty:
             pass
-        self.root.after(16, self._pump)
+        # Poll at 16 ms while a drag is in progress (user may press B3/Shift
+        # at any moment and we need the overlay to appear promptly).
+        # Back off to 100 ms at idle to reduce CPU on slower hardware / VMs.
+        interval = 16 if self.daemon.is_dragging else 100
+        self.root.after(interval, self._pump)
 
     # ------------------------------------------------------------------ editor
 

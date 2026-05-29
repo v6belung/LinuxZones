@@ -393,6 +393,21 @@ class ZoneDaemon:
         while data:
             if len(data) < 32:
                 break        # incomplete trailing bytes — stop cleanly
+            # Fast path: inspect the raw event type byte without invoking the
+            # slow Xlib binary parser.  The low 7 bits (mask off the synthetic
+            # event flag at bit 7) give the core X event number.
+            raw_type = data[0] & 0x7f
+            # Skip MotionNotify (6) events unless the overlay could be shown
+            # soon (i.e. we are already dragging).  At IDLE or BUTTON1_DOWN
+            # there is nothing to highlight, so motion events are pure noise.
+            if raw_type == X.MotionNotify and self._state not in (
+                    _State.DRAGGING, _State.OVERLAY_ACTIVE):
+                data = data[32:]
+                continue
+            # Skip keyboard events entirely when Shift-snap is disabled.
+            if raw_type in (X.KeyPress, X.KeyRelease) and not self._shift_snap:
+                data = data[32:]
+                continue
             try:
                 event, data = rq.EventField(None).parse_binary_value(
                     data, self.record_dpy.display, None, None)
@@ -427,6 +442,11 @@ class ZoneDaemon:
             self.record_dpy.record_enable_context(ctx, self._record_callback)
         finally:
             self.record_dpy.record_free_context(ctx)
+
+    @property
+    def is_dragging(self) -> bool:
+        """True whenever a left-drag is in progress (overlay may appear soon)."""
+        return self._state != _State.IDLE
 
     def update_layout(self, layout: Layout) -> None:
         """Thread-safe layout swap."""
