@@ -3,6 +3,21 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# $SCRIPT_DIR is interpolated into the /usr/local/bin/linuxzones launcher and
+# several .desktop Exec= lines below.  If the checkout path contains shell
+# metacharacters they would be re-evaluated when the launcher runs (command
+# injection) or break the generated files.  Refuse to proceed in that case
+# rather than emit a booby-trapped launcher.
+case "$SCRIPT_DIR" in
+    *'`'*|*'$'*|*'"'*|*'\'*|*"'"*)
+        echo "ERROR: LinuxZones path contains unsafe characters:" >&2
+        echo "         $SCRIPT_DIR" >&2
+        echo "       Move the project to a path without \$ \` \" ' or backslash and re-run." >&2
+        exit 1
+        ;;
+esac
+
 APP_DESKTOP="$HOME/.local/share/applications/linuxzones.desktop"
 DESK_SHORTCUT="$HOME/Desktop/LinuxZones.desktop"
 AUTOSTART="$HOME/.config/autostart/linuxzones.desktop"

@@ -8,6 +8,8 @@ Window zone snapping for Linux — replicates the core FancyZones workflow from 
 
 An optional **Shift key** trigger is also available (disabled by default) — hold Shift while dragging to show the overlay, release Shift to snap. Enable it in the Layout Editor under **Settings**.
 
+> **Privacy note:** With the right-click trigger (the default) LinuxZones monitors mouse-button and motion events only. Enabling the Shift trigger additionally makes it monitor **key-press events globally** so it can detect Shift while you drag. Keystrokes are inspected in-process to check for the Shift key only — they are never recorded, stored, or transmitted anywhere. If you prefer LinuxZones not to see your keystrokes at all, leave the Shift trigger off and use right-click.
+
 ---
 
 ## Requirements
@@ -69,6 +71,8 @@ Enable **Shift key snap** in the Layout Editor → **Settings** section.
 4. **Release Shift** — the window snaps to that zone.
 
 Both triggers are independent. Right-click always works regardless of the Shift setting.
+
+> **Privacy:** the Shift trigger requires LinuxZones to monitor key-press events globally (in addition to the mouse) so it can tell when Shift is held during a drag. Keystrokes are only checked for the Shift key in-process and are never recorded, stored, or sent anywhere. Leave this setting off to keep input monitoring limited to the mouse.
 
 ---
 

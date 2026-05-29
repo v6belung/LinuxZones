@@ -101,6 +101,12 @@ class ZoneDaemon:
         except Exception:
             self._shift_keycodes = frozenset()
 
+        # Active RECORD context handle (valid while record_enable_context is
+        # blocking) and a flag used to break out of it intentionally when the
+        # event subscription must change.  See run() / update_shift_snap().
+        self._ctx = None
+        self._reconfigure_requested: bool = False
+
     # ------------------------------------------------------------------ window helpers
 
     def _active_window(self) -> Optional[object]:
@@ -397,11 +403,13 @@ class ZoneDaemon:
             # slow Xlib binary parser.  The low 7 bits (mask off the synthetic
             # event flag at bit 7) give the core X event number.
             raw_type = data[0] & 0x7f
-            # Skip MotionNotify (6) events unless the overlay could be shown
-            # soon (i.e. we are already dragging).  At IDLE or BUTTON1_DOWN
-            # there is nothing to highlight, so motion events are pure noise.
-            if raw_type == X.MotionNotify and self._state not in (
-                    _State.DRAGGING, _State.OVERLAY_ACTIVE):
+            # Skip MotionNotify (6) events only while fully IDLE (no button held)
+            # — there is nothing to track, so they are pure noise.  At
+            # BUTTON1_DOWN motion MUST flow through: _handle() promotes
+            # BUTTON1_DOWN → DRAGGING precisely by measuring motion past the drag
+            # threshold, so filtering it here would break drag detection (and
+            # therefore the overlay and snapping entirely).
+            if raw_type == X.MotionNotify and self._state == _State.IDLE:
                 data = data[32:]
                 continue
             # Skip keyboard events entirely when Shift-snap is disabled.
@@ -419,29 +427,59 @@ class ZoneDaemon:
                 # packet — including a B3 release that should trigger a snap.
                 data = data[32:]
 
+    def _record_spec(self) -> dict:
+        """Build the RECORD range spec for the current settings.
+
+        Keyboard events (KeyPress=2, KeyRelease=3) are requested ONLY when
+        shift_snap is enabled.  When it is off — the default — the range starts
+        at ButtonPress=4, so keystrokes typed in other applications are never
+        delivered to this process at all (principle of least privilege: we do
+        not subscribe to a global keystroke feed we have no use for).
+        """
+        first_event = X.KeyPress if self._shift_snap else X.ButtonPress
+        return {
+            "core_requests":    (0, 0),
+            "core_replies":     (0, 0),
+            "ext_requests":     (0, 0, 0, 0),
+            "ext_replies":      (0, 0, 0, 0),
+            "delivered_events": (0, 0),
+            # ButtonPress=4, ButtonRelease=5, MotionNotify=6.
+            # KeyPress=2 / KeyRelease=3 are included only when shift_snap is on.
+            "device_events":    (first_event, X.MotionNotify),
+            "errors":           (0, 0),
+            "client_started":   False,
+            "client_died":      False,
+        }
+
     def run(self) -> None:
-        """Start the RECORD event loop (blocks until display is closed)."""
-        ctx = self.record_dpy.record_create_context(
-            0,
-            [record.AllClients],
-            [{
-                "core_requests":    (0, 0),
-                "core_replies":     (0, 0),
-                "ext_requests":     (0, 0, 0, 0),
-                "ext_replies":      (0, 0, 0, 0),
-                "delivered_events": (0, 0),
-                # KeyPress=2, KeyRelease=3, ButtonPress=4,
-                # ButtonRelease=5, MotionNotify=6
-                "device_events":    (X.KeyPress, X.MotionNotify),
-                "errors":           (0, 0),
-                "client_started":   False,
-                "client_died":      False,
-            }],
-        )
-        try:
-            self.record_dpy.record_enable_context(ctx, self._record_callback)
-        finally:
-            self.record_dpy.record_free_context(ctx)
+        """Start the RECORD event loop.
+
+        record_enable_context() blocks until another thread calls
+        record_disable_context() on the same context XID.  We exploit that to
+        rebuild the context with a new event range when shift_snap is toggled,
+        so the keyboard subscription always matches the setting.  The loop only
+        re-creates the context for an intentional reconfigure; any other return
+        means the display went away, so we stop rather than busy-loop.
+        """
+        while True:
+            self._reconfigure_requested = False
+            try:
+                self._ctx = self.record_dpy.record_create_context(
+                    0, [record.AllClients], [self._record_spec()],
+                )
+            except Exception as e:
+                print(f"[linuxzones] RECORD unavailable ({e}); input monitoring disabled.")
+                return
+            try:
+                self.record_dpy.record_enable_context(self._ctx, self._record_callback)
+            finally:
+                try:
+                    self.record_dpy.record_free_context(self._ctx)
+                except Exception:
+                    pass
+                self._ctx = None
+            if not self._reconfigure_requested:
+                return   # display closed / error — do not respin the loop
 
     @property
     def is_dragging(self) -> bool:
@@ -453,5 +491,25 @@ class ZoneDaemon:
         self.layout = layout
 
     def update_shift_snap(self, enabled: bool) -> None:
-        """Thread-safe shift-snap toggle (called from the UI thread after editor saves)."""
+        """Toggle shift-snap (called from the UI thread after the editor saves).
+
+        Rebuilds the RECORD context so the keyboard-event subscription matches
+        the new setting: keystrokes from other applications are intercepted
+        only while shift_snap is enabled.
+        """
+        if enabled == self._shift_snap:
+            return
         self._shift_snap = enabled
+        self._reconfigure_requested = True
+        # Break the blocking record_enable_context in the daemon thread so run()
+        # rebuilds the context.  Disabling from a separate display connection
+        # (ctrl_dpy) is the documented python-xlib pattern; the editor is open
+        # and the daemon idle when this runs, so there is no concurrent use of
+        # ctrl_dpy from the record thread.
+        ctx = self._ctx
+        if ctx is not None:
+            try:
+                self.ctrl_dpy.record_disable_context(ctx)
+                self.ctrl_dpy.flush()
+            except Exception as e:
+                print(f"[linuxzones] shift_snap reconfigure failed: {e}")

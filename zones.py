@@ -2,7 +2,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 import json
+import math
 import os
+import tempfile
 
 CONFIG_DIR = os.path.expanduser("~/.config/linuxzones")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -88,6 +90,36 @@ DEFAULT_LAYOUTS: Dict[str, Layout] = {
 }
 
 
+def _sanitize_zones(zones: List[Zone]) -> List[Zone]:
+    """Validate zones loaded from an untrusted / hand-edited config so the
+    geometry that reaches wmctrl and the overlay is always on-screen and sane.
+
+    A zone is dropped if any coordinate is non-numeric or non-finite, or if its
+    width or height is not positive.  Otherwise the origin is clamped to
+    [0.0, 1.0] and the size is clamped so the zone stays within the screen, and
+    the name is coerced to a string of at most 64 characters.
+    """
+    clean: List[Zone] = []
+    for z in zones:
+        try:
+            x, y, w, h = float(z.x), float(z.y), float(z.w), float(z.h)
+        except (TypeError, ValueError):
+            continue
+        if not all(math.isfinite(v) for v in (x, y, w, h)):
+            continue
+        if w <= 0.0 or h <= 0.0:
+            continue
+        x = min(max(x, 0.0), 1.0)
+        y = min(max(y, 0.0), 1.0)
+        w = min(w, 1.0 - x)
+        h = min(h, 1.0 - y)
+        if w <= 0.0 or h <= 0.0:
+            continue
+        name = z.name if isinstance(z.name, str) else str(z.name)
+        clean.append(Zone(x, y, w, h, name[:64]))
+    return clean
+
+
 def load_config() -> Tuple[Dict[str, Layout], str, float, bool]:
     """Returns (layouts, active_layout_name, overlay_opacity, shift_snap).
     Falls back to defaults."""
@@ -96,10 +128,11 @@ def load_config() -> Tuple[Dict[str, Layout], str, float, bool]:
     try:
         with open(CONFIG_FILE) as f:
             data = json.load(f)
-        layouts = {
-            name: Layout.from_dict(ldict)
-            for name, ldict in data.get("layouts", {}).items()
-        }
+        layouts = {}
+        for name, ldict in data.get("layouts", {}).items():
+            layout = Layout.from_dict(ldict)
+            layout.zones = _sanitize_zones(layout.zones)
+            layouts[name] = layout
         if not layouts:
             layouts = dict(DEFAULT_LAYOUTS)
         active = data.get("active_layout", next(iter(layouts)))
@@ -121,14 +154,26 @@ def save_config(
     shift_snap: bool = False,
 ) -> None:
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(
-            {
-                "active_layout": active_layout,
-                "overlay_opacity": round(opacity, 2),
-                "shift_snap": shift_snap,
-                "layouts": {name: l.to_dict() for name, l in layouts.items()},
-            },
-            f,
-            indent=2,
-        )
+    payload = {
+        "active_layout": active_layout,
+        "overlay_opacity": round(opacity, 2),
+        "shift_snap": shift_snap,
+        "layouts": {name: l.to_dict() for name, l in layouts.items()},
+    }
+    # Atomic write: serialise to a temp file in the same directory, fsync it,
+    # then os.replace() (atomic on POSIX) over the real config.  A crash or
+    # power loss mid-write can no longer truncate or corrupt the user's layouts
+    # — the old config stays intact until the new one is fully on disk.
+    fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".config-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(payload, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, CONFIG_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise

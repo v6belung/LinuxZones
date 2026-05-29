@@ -172,6 +172,16 @@ class ZoneEditor:
             lf_settings,
             text="Hold Shift while dragging to snap\n(alternative to right-click)",
             justify="left",
+        ).pack(anchor="w", padx=24, pady=(0, 2))
+        ttk.Label(
+            lf_settings,
+            text="Privacy: enabling this makes LinuxZones\n"
+                 "monitor key presses globally so it can\n"
+                 "detect Shift. Keystrokes are never stored\n"
+                 "or sent anywhere. Leave off to monitor\n"
+                 "mouse buttons only.",
+            justify="left",
+            foreground="#888888",
         ).pack(anchor="w", padx=24, pady=(0, 6))
 
         # OVERLAY OPACITY -------------------------------------------------

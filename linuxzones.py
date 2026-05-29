@@ -207,6 +207,30 @@ class LinuxZonesApp:
 
 # ------------------------------------------------------------------ standalone commands
 
+def _pid_is_linuxzones(pid: int) -> bool:
+    """True if /proc/<pid> looks like a running linuxzones instance.
+
+    Guards the SIGUSR1 delivery in cmd_run(): after a crash the OS may have
+    recycled the PID stored in linuxzones.pid for an unrelated process, and
+    SIGUSR1's default action would terminate it.  We check the comm name
+    (set via prctl) first and fall back to the full cmdline.
+    """
+    if pid <= 0:
+        return False
+    try:
+        with open(f"/proc/{pid}/comm") as f:
+            if f.read().strip() == "linuxzones":
+                return True
+    except OSError:
+        pass
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmdline = f.read().replace(b"\x00", b" ").decode("utf-8", "replace")
+        return "linuxzones" in cmdline
+    except OSError:
+        return False
+
+
 def cmd_run(layout_name: str | None):
     import fcntl
     import datetime
@@ -232,10 +256,14 @@ def cmd_run(layout_name: str | None):
             _pf.write(str(os.getpid()))
     except OSError:
         # Another instance is running — send SIGUSR1 to open its editor.
+        # Verify the PID actually belongs to a linuxzones process first: after
+        # a crash the OS may have recycled it for an unrelated process, and
+        # SIGUSR1's default disposition would terminate that innocent victim.
         try:
             with open(_pid_path) as _f:
                 _pid = int(_f.read().strip())
-            os.kill(_pid, signal.SIGUSR1)
+            if _pid_is_linuxzones(_pid):
+                os.kill(_pid, signal.SIGUSR1)
         except Exception:
             pass
         sys.exit(0)
