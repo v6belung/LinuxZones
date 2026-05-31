@@ -264,12 +264,18 @@ class ZoneDaemon:
             print("[linuxzones] snap: no active window found")
             return
 
+        # Re-read work area each snap so an auto-hide panel or late-starting
+        # compositor strut doesn't leave us with stale (full-screen) dimensions.
+        wx, wy, ww, wh = self._get_work_area()
+        self._work_x, self._work_y, self._work_w, self._work_h = wx, wy, ww, wh
+
         win_id = win.id
         zone   = self.layout.zones[zone_idx]
-        zx = self._work_x + int(zone.x * self._work_w)
-        zy = self._work_y + int(zone.y * self._work_h)
-        zw = int(zone.w * self._work_w)
-        zh = int(zone.h * self._work_h)
+        zx = wx + int(zone.x * ww)
+        zy = wy + int(zone.y * wh)
+        zw = int(zone.w * ww)
+        zh = int(zone.h * wh)
+        print(f"[linuxzones] work area: ({wx},{wy} {ww}×{wh})")
 
         # GTK CSD apps (Software Manager, GNOME apps, …) draw invisible
         # shadow/resize-handle margins inside the client window boundary.
