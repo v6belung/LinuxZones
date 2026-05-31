@@ -308,21 +308,17 @@ class ZoneDaemon:
         self._unmaximize(win)
 
         # Step 3a: Try wmctrl — the most reliable method on Cinnamon.
-        #   wmctrl with gravity=0 subtracts _NET_FRAME_EXTENTS from the
-        #   position (wrong direction) but passes size unchanged as client
-        #   dimensions.  Observed: passing (zy=0, zh=1040) with ft=32 lands
-        #   the client at y=-32, h=1040 — outer at y=-64.
-        #   Compensate: shift y by +2*ft (and x by +2*fl) so wmctrl's
-        #   subtraction cancels out, and shrink h by ft+fb so the client
-        #   height fits inside the zone.  For CSD windows ft==0 so this
-        #   is a no-op, and the GTK shadow expansion still applies.
-        wm_x = zx + 2 * fl
-        wm_y = zy + 2 * ft
+        #   wmctrl -ir <hex_id> -e 0,x,y,w,h  (gravity=0 = current gravity)
+        #   wmctrl correctly converts outer-frame (x,y) to client position
+        #   by adding _NET_FRAME_EXTENTS, but passes w,h to the WM unchanged
+        #   as client dimensions.  We must supply client w,h (outer minus
+        #   frame extents) so the outer frame lands exactly on the zone rect.
+        #   For CSD windows frame extents are (0,0,0,0): no-op.
         wm_w = max(1, zw - fl - fr)
         wm_h = max(1, zh - ft - fb)
         try:
             r = subprocess.run(
-                ["wmctrl", "-ir", hex(win_id), "-e", f"0,{wm_x},{wm_y},{wm_w},{wm_h}"],
+                ["wmctrl", "-ir", hex(win_id), "-e", f"0,{zx},{zy},{wm_w},{wm_h}"],
                 timeout=2,
                 capture_output=True,
             )
