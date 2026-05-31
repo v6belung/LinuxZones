@@ -9,3 +9,7 @@ __pycache__/
 *.lock
 *.pid
 *.log
+
+# Packaging build artefacts
+*.deb
+linuxzones_*/

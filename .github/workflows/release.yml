@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  build-deb:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build .deb
+        run: bash build-deb.sh
+
+      - name: Get version
+        id: ver
+        run: |
+          echo "version=$(python3 -c "
+          import re
+          print(re.search(r'__version__ = [\"\'](.*?)[\"\']', open('linuxzones.py').read()).group(1))
+          ")" >> $GITHUB_OUTPUT
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "LinuxZones ${{ github.ref_name }}" \
+            --generate-notes \
+            "linuxzones_${{ steps.ver.outputs.version }}_all.deb"
