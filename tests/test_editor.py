@@ -19,10 +19,9 @@ from zones import Layout, Zone
 
 @pytest.fixture(scope="session")
 def tk_root():
-    # A single Tk root for the whole session.  Creating/destroying multiple
-    # tk.Tk() instances in one process corrupts Tcl's library lookup on Windows
-    # ("invalid command name tcl_findLibrary"), so every editor is a Toplevel
-    # of this one hidden root instead.
+    # A single Tk root for the whole session keeps Tcl initialisation to once,
+    # which is faster and avoids any per-test teardown races.  Each editor
+    # under test is a Toplevel of this shared root, not a standalone Tk().
     try:
         root = tk.Tk()
     except TclError as e:                      # pragma: no cover

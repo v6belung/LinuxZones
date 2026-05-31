@@ -306,6 +306,20 @@ def cmd_run(layout_name: str | None):
     # so errors are captured and not silently dropped.
     if not sys.stdout.isatty():
         _log_path = os.path.join(_log_dir, "linuxzones.log")
+        # Trim the log if it has grown past the hard cap, keeping the tail so
+        # recent sessions are always readable.  Runs before we open for append
+        # so the write cursor starts at the true end of the (possibly trimmed) file.
+        _MAX_LOG  = 512 * 1024   # 512 KB hard cap
+        _KEEP_LOG = 256 * 1024   # keep last 256 KB after trimming
+        try:
+            if os.path.getsize(_log_path) > _MAX_LOG:
+                with open(_log_path, "rb") as _lf:
+                    _lf.seek(-_KEEP_LOG, 2)
+                    _tail = _lf.read()
+                with open(_log_path, "wb") as _lf:
+                    _lf.write(_tail)
+        except OSError:
+            pass
         _log_fh = open(_log_path, "a", buffering=1)   # line-buffered
         sys.stdout = _log_fh
         sys.stderr = _log_fh

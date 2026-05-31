@@ -47,6 +47,10 @@ def make_daemon(halves_layout):
         d.ui_queue = queue.Queue()
         d.screen_w = screen_w
         d.screen_h = screen_h
+        d._work_x  = 0
+        d._work_y  = 0
+        d._work_w  = screen_w
+        d._work_h  = screen_h
 
         # Drag state
         d._state    = state

@@ -288,8 +288,6 @@ class ZoneDaemon:
 
         fl, fr, ft, fb = self._frame_extents(win)
         gl, gr, gt, gb = self._gtk_frame_extents(win)
-        print(f"[linuxzones] work area: ({wx},{wy} {ww}×{wh})")
-        print(f"[linuxzones] frame extents  NET=({fl},{fr},{ft},{fb})  GTK=({gl},{gr},{gt},{gb})")
 
         # GTK CSD apps (Software Manager, GNOME apps, …) draw invisible
         # shadow/resize-handle margins inside the client window boundary.
@@ -334,14 +332,6 @@ class ZoneDaemon:
             )
             if r.returncode == 0:
                 print("[linuxzones] snapped via wmctrl ✓")
-                time.sleep(0.08)
-                try:
-                    coords = win.translate_coords(self.root, 0, 0)
-                    geom   = win.get_geometry()
-                    print(f"[linuxzones] actual client: pos=({coords.x},{coords.y}) size={geom.width}×{geom.height}")
-                    print(f"[linuxzones] actual outer:  pos=({coords.x-fl},{coords.y-ft}) size={geom.width+fl+fr}×{geom.height+ft+fb}")
-                except Exception as ve:
-                    print(f"[linuxzones] geometry read-back failed: {ve}")
                 return
             print(f"[linuxzones] wmctrl exited {r.returncode}: {r.stderr.decode().strip()}")
         except FileNotFoundError:
@@ -353,8 +343,6 @@ class ZoneDaemon:
         # Step 3b: Fallback — _NET_MOVERESIZE_WINDOW (EWMH).
         #   Coordinates are for the CLIENT window (inner, no decorations).
         #   We adjust using _NET_FRAME_EXTENTS so the outer frame fills the zone.
-        fl, fr, ft, fb = self._frame_extents(win)
-        print(f"[linuxzones] frame extents: l={fl} r={fr} t={ft} b={fb}")
         cx = zx + fl
         cy = zy + ft
         cw = max(1, zw - fl - fr)
