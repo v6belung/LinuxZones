@@ -275,12 +275,15 @@ class ZoneDaemon:
         zy = wy + int(zone.y * wh)
         zw = int(zone.w * ww)
         zh = int(zone.h * wh)
+
+        fl, fr, ft, fb = self._frame_extents(win)
+        gl, gr, gt, gb = self._gtk_frame_extents(win)
         print(f"[linuxzones] work area: ({wx},{wy} {ww}×{wh})")
+        print(f"[linuxzones] frame extents  NET=({fl},{fr},{ft},{fb})  GTK=({gl},{gr},{gt},{gb})")
 
         # GTK CSD apps (Software Manager, GNOME apps, …) draw invisible
         # shadow/resize-handle margins inside the client window boundary.
         # Expand the target rect outward so the *visible* content fills the zone.
-        gl, gr, gt, gb = self._gtk_frame_extents(win)
         if gl or gr or gt or gb:
             zx -= gl;  zy -= gt
             zw += gl + gr;  zh += gt + gb
@@ -316,6 +319,14 @@ class ZoneDaemon:
             )
             if r.returncode == 0:
                 print("[linuxzones] snapped via wmctrl ✓")
+                time.sleep(0.08)
+                try:
+                    coords = win.translate_coords(self.root, 0, 0)
+                    geom   = win.get_geometry()
+                    print(f"[linuxzones] actual client: pos=({coords.x},{coords.y}) size={geom.width}×{geom.height}")
+                    print(f"[linuxzones] actual outer:  pos=({coords.x-fl},{coords.y-ft}) size={geom.width+fl+fr}×{geom.height+ft+fb}")
+                except Exception as ve:
+                    print(f"[linuxzones] geometry read-back failed: {ve}")
                 return
             print(f"[linuxzones] wmctrl exited {r.returncode}: {r.stderr.decode().strip()}")
         except FileNotFoundError:

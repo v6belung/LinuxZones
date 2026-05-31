@@ -10,7 +10,7 @@ Usage:
   python3 linuxzones.py --version
 """
 
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 
 import argparse
 import os

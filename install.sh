@@ -22,6 +22,16 @@ APP_DESKTOP="$HOME/.local/share/applications/linuxzones.desktop"
 DESK_SHORTCUT="$HOME/Desktop/LinuxZones.desktop"
 AUTOSTART="$HOME/.config/autostart/linuxzones.desktop"
 
+# ------------------------------------------------------------------ stop running instance
+
+echo "==> Stopping any running LinuxZones instance..."
+if pkill -x linuxzones 2>/dev/null; then
+    sleep 0.5
+    echo "  Stopped."
+else
+    echo "  Not running — nothing to stop."
+fi
+
 # ------------------------------------------------------------------ packages
 
 echo "==> Installing system packages..."
