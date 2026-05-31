@@ -10,7 +10,7 @@ Usage:
   python3 linuxzones.py --version
 """
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 import argparse
 import os
@@ -48,6 +48,31 @@ def _get_screen_size():
     return w, h
 
 
+def _get_work_area():
+    """Return (x, y, w, h) of the usable work area from _NET_WORKAREA.
+
+    Falls back to the full screen dimensions if the WM doesn't publish the
+    property (headless / minimal WM environments).
+    """
+    import Xlib.display
+    import Xlib.X as X
+    dpy = Xlib.display.Display()
+    screen = dpy.screen()
+    sw, sh = screen.width_in_pixels, screen.height_in_pixels
+    try:
+        a = dpy.intern_atom("_NET_WORKAREA")
+        prop = screen.root.get_full_property(a, X.AnyPropertyType)
+        if prop and len(prop.value) >= 4:
+            x, y, w, h = (int(v) for v in prop.value[:4])
+            if w > 0 and h > 0:
+                dpy.close()
+                return x, y, w, h
+    except Exception:
+        pass
+    dpy.close()
+    return 0, 0, sw, sh
+
+
 def _set_proc_name(name: str) -> None:
     """Set the process name shown in system monitors (via prctl PR_SET_NAME)."""
     try:
@@ -80,6 +105,7 @@ class LinuxZonesApp:
             self.active = layout_override
 
         self.screen_w, self.screen_h = _get_screen_size()
+        self.work_x, self.work_y, self.work_w, self.work_h = _get_work_area()
         self.ui_queue: queue.Queue = queue.Queue()
 
         # Hidden root Tk — owns the event loop; never shown to the user.
@@ -96,6 +122,10 @@ class LinuxZonesApp:
             self.root, layout.zones,
             self.screen_w, self.screen_h,
             self.opacity,
+            work_x=self.work_x,
+            work_y=self.work_y,
+            work_w=self.work_w,
+            work_h=self.work_h,
         )
 
         # X11 event daemon (background thread)

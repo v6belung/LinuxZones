@@ -24,11 +24,19 @@ class ZoneOverlay:
         screen_w: int,
         screen_h: int,
         opacity: float = 0.5,
+        work_x: int = 0,
+        work_y: int = 0,
+        work_w: int = 0,
+        work_h: int = 0,
     ):
         self._opacity = max(0.1, min(0.9, opacity))
         self.zones = zones
         self.screen_w = screen_w
         self.screen_h = screen_h
+        self.work_x = work_x
+        self.work_y = work_y
+        self.work_w = work_w if work_w > 0 else screen_w
+        self.work_h = work_h if work_h > 0 else screen_h
         self.active_zone: Optional[int] = None
         self._visible = False
 
@@ -39,7 +47,7 @@ class ZoneOverlay:
     def _build(self):
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
-        self.root.geometry(f"{self.screen_w}x{self.screen_h}+0+0")
+        self.root.geometry(f"{self.work_w}x{self.work_h}+{self.work_x}+{self.work_y}")
 
         # Do NOT set wm_attributes("-type", ...) — on Cinnamon/Muffin those
         # types tell the compositor to skip compositing, preventing transparency.
@@ -58,7 +66,7 @@ class ZoneOverlay:
     def _draw(self):
         self.canvas.delete("all")
         for i, zone in enumerate(self.zones):
-            x, y, w, h = zone.pixel_rect(self.screen_w, self.screen_h)
+            x, y, w, h = zone.pixel_rect(self.work_w, self.work_h)
             is_active = (i == self.active_zone)
             fill   = ACTIVE_COLOR if is_active else ZONE_COLORS[i % len(ZONE_COLORS)]
             border = BORDER + 2 if is_active else BORDER

@@ -87,6 +87,11 @@ class ZoneDaemon:
         self._a_net_wm_state  = self.ctrl_dpy.intern_atom("_NET_WM_STATE")
         self._a_max_h         = self.ctrl_dpy.intern_atom("_NET_WM_STATE_MAXIMIZED_HORZ")
         self._a_max_v         = self.ctrl_dpy.intern_atom("_NET_WM_STATE_MAXIMIZED_VERT")
+        self._a_workarea          = self.ctrl_dpy.intern_atom("_NET_WORKAREA")
+        self._a_gtk_frame_extents = self.ctrl_dpy.intern_atom("_GTK_FRAME_EXTENTS")
+
+        # Usable area (excludes taskbars/panels); zones are fractions of this.
+        self._work_x, self._work_y, self._work_w, self._work_h = self._get_work_area()
 
         # Drag state
         self._state:     int              = _State.IDLE
@@ -137,6 +142,30 @@ class ZoneDaemon:
             return frozenset(c for c in codes if c)
         except Exception:
             return frozenset()
+
+    # ------------------------------------------------------------------ work area
+
+    def _get_work_area(self) -> Tuple[int, int, int, int]:
+        """Return (x, y, w, h) of the usable work area from _NET_WORKAREA.
+
+        Falls back to the full screen if the property is unavailable (minimal WM).
+        """
+        try:
+            prop = self.root.get_full_property(self._a_workarea, X.AnyPropertyType)
+            if prop and len(prop.value) >= 4:
+                x, y, w, h = (int(v) for v in prop.value[:4])
+                if w > 0 and h > 0:
+                    return x, y, w, h
+        except Exception:
+            pass
+        return 0, 0, self.screen_w, self.screen_h
+
+    def _zone_at(self, root_x: int, root_y: int) -> Optional[int]:
+        """Zone index at absolute screen position, using work-area fractions."""
+        return self.layout.zone_at(
+            root_x - self._work_x, root_y - self._work_y,
+            self._work_w, self._work_h,
+        )
 
     # ------------------------------------------------------------------ window helpers
 
@@ -190,6 +219,23 @@ class ZoneDaemon:
             pass
         return (0, 0, 0, 0)
 
+    def _gtk_frame_extents(self, win) -> Tuple[int, int, int, int]:
+        """Return (left, right, top, bottom) GTK CSD shadow margins, or zeros.
+
+        GTK3/4 CSD windows set _GTK_FRAME_EXTENTS to declare how many pixels
+        on each side of the client window are invisible shadow/resize-handle
+        areas.  _NET_FRAME_EXTENTS is typically zero for these windows (no WM
+        decorations), so wmctrl won't compensate — we must expand the snap
+        rect outward by these amounts so the visible content fills the zone.
+        """
+        try:
+            prop = win.get_full_property(self._a_gtk_frame_extents, X.AnyPropertyType)
+            if prop and len(prop.value) >= 4:
+                return tuple(int(v) for v in prop.value[:4])
+        except Exception:
+            pass
+        return (0, 0, 0, 0)
+
     def _unmaximize(self, win) -> None:
         """Remove maximised state — maximised windows ignore move/resize requests."""
         try:
@@ -220,10 +266,19 @@ class ZoneDaemon:
 
         win_id = win.id
         zone   = self.layout.zones[zone_idx]
-        zx = int(zone.x * self.screen_w)
-        zy = int(zone.y * self.screen_h)
-        zw = int(zone.w * self.screen_w)
-        zh = int(zone.h * self.screen_h)
+        zx = self._work_x + int(zone.x * self._work_w)
+        zy = self._work_y + int(zone.y * self._work_h)
+        zw = int(zone.w * self._work_w)
+        zh = int(zone.h * self._work_h)
+
+        # GTK CSD apps (Software Manager, GNOME apps, …) draw invisible
+        # shadow/resize-handle margins inside the client window boundary.
+        # Expand the target rect outward so the *visible* content fills the zone.
+        gl, gr, gt, gb = self._gtk_frame_extents(win)
+        if gl or gr or gt or gb:
+            zx -= gl;  zy -= gt
+            zw += gl + gr;  zh += gt + gb
+
         print(f"[linuxzones] snapping 0x{win_id:x} → zone {zone_idx} ({zx},{zy} {zw}×{zh})")
 
         # Step 1: Cancel the WM's pointer grab so it stops moving the window.
@@ -313,8 +368,7 @@ class ZoneDaemon:
         """
         if self._last_zone is not None:
             return self._last_zone
-        return self.layout.zone_at(
-            event.root_x, event.root_y, self.screen_w, self.screen_h)
+        return self._zone_at(event.root_x, event.root_y)
 
     def _handle(self, event) -> None:
         etype = event.type
@@ -336,8 +390,7 @@ class ZoneDaemon:
             if self._state == _State.DRAGGING:
                 self._overlay_by_mod = True
                 self._state = _State.OVERLAY_ACTIVE
-                zone_idx = self.layout.zone_at(
-                    event.root_x, event.root_y, self.screen_w, self.screen_h)
+                zone_idx = self._zone_at(event.root_x, event.root_y)
                 self._last_zone = zone_idx
                 self.ui_queue.put(("show",))
                 self.ui_queue.put(("highlight", zone_idx))
@@ -379,8 +432,7 @@ class ZoneDaemon:
                 # any in-progress modifier-triggered overlay is handed over to B3).
                 self._state = _State.OVERLAY_ACTIVE
                 self._overlay_by_mod = False
-                zone_idx = self.layout.zone_at(
-                    event.root_x, event.root_y, self.screen_w, self.screen_h)
+                zone_idx = self._zone_at(event.root_x, event.root_y)
                 self._last_zone = zone_idx
                 self.ui_queue.put(("show",))
                 self.ui_queue.put(("highlight", zone_idx))
@@ -429,8 +481,7 @@ class ZoneDaemon:
                     self._state = _State.DRAGGING
 
             if self._state == _State.OVERLAY_ACTIVE:
-                zone_idx = self.layout.zone_at(
-                    event.root_x, event.root_y, self.screen_w, self.screen_h)
+                zone_idx = self._zone_at(event.root_x, event.root_y)
                 if zone_idx != self._last_zone:
                     self._last_zone = zone_idx
                     self.ui_queue.put(("highlight", zone_idx))
