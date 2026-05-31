@@ -21,7 +21,7 @@ overlay via a thread-safe queue.Queue.
 import queue
 import subprocess
 import time
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import Xlib.display
 import Xlib.X as X
@@ -98,7 +98,7 @@ class ZoneDaemon:
         self._btn1_x:    int              = 0
         self._btn1_y:    int              = 0
         self._drag_win:  Optional[object] = None
-        self._last_zone: Optional[int]    = None
+        self._last_zone: Optional[Union[int, Tuple[int, int]]] = None
         # True while the user's physical B1 is held (set on press, cleared on
         # real release — fake releases are swallowed and do NOT clear this).
         self._b1_held:            bool    = False
@@ -160,12 +160,17 @@ class ZoneDaemon:
             pass
         return 0, 0, self.screen_w, self.screen_h
 
-    def _zone_at(self, root_x: int, root_y: int) -> Optional[int]:
-        """Zone index at absolute screen position, using work-area fractions."""
-        return self.layout.zone_at(
-            root_x - self._work_x, root_y - self._work_y,
-            self._work_w, self._work_h,
-        )
+    def _zone_at(self, root_x: int, root_y: int) -> Optional[Union[int, Tuple[int, int]]]:
+        """Zone or margin pair at absolute screen position, using work-area fractions.
+
+        Margins (within MARGIN_PX of a shared zone boundary) take priority
+        over zone interiors so the strip always activates near a boundary.
+        """
+        sx, sy = root_x - self._work_x, root_y - self._work_y
+        margin = self.layout.margin_at(sx, sy, self._work_w, self._work_h)
+        if margin is not None:
+            return margin
+        return self.layout.zone_at(sx, sy, self._work_w, self._work_h)
 
     # ------------------------------------------------------------------ window helpers
 
@@ -255,7 +260,7 @@ class ZoneDaemon:
 
     # ------------------------------------------------------------------ snapping
 
-    def _snap(self, zone_idx: int) -> None:
+    def _snap(self, target: Union[int, Tuple[int, int]]) -> None:
         # Read active window BEFORE faking any events — focus can change afterwards.
         # _NET_ACTIVE_WINDOW always holds the client window ID (not the WM frame),
         # which is required for _NET_MOVERESIZE_WINDOW and wmctrl to work.
@@ -270,7 +275,12 @@ class ZoneDaemon:
         self._work_x, self._work_y, self._work_w, self._work_h = wx, wy, ww, wh
 
         win_id = win.id
-        zone   = self.layout.zones[zone_idx]
+        if isinstance(target, tuple):
+            zone = self.layout.spanning_zone(*target)
+            zone_desc = f"margin{target}"
+        else:
+            zone = self.layout.zones[target]
+            zone_desc = str(target)
         zx = wx + int(zone.x * ww)
         zy = wy + int(zone.y * wh)
         zw = int(zone.w * ww)
@@ -288,7 +298,7 @@ class ZoneDaemon:
             zx -= gl;  zy -= gt
             zw += gl + gr;  zh += gt + gb
 
-        print(f"[linuxzones] snapping 0x{win_id:x} → zone {zone_idx} ({zx},{zy} {zw}×{zh})")
+        print(f"[linuxzones] snapping 0x{win_id:x} → zone {zone_desc} ({zx},{zy} {zw}×{zh})")
 
         # Step 1: Cancel the WM's pointer grab so it stops moving the window.
         #         Without this the WM continues tracking the drag and overrides us.
@@ -377,7 +387,7 @@ class ZoneDaemon:
 
     # ------------------------------------------------------------------ event handling
 
-    def _release_zone(self, event) -> Optional[int]:
+    def _release_zone(self, event) -> Optional[Union[int, Tuple[int, int]]]:
         """Zone to snap to when a trigger (B3 or modifier) is released.
 
         Prefer the zone the overlay is currently HIGHLIGHTING (``_last_zone``,

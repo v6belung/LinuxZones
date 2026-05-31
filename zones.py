@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 import json
 import math
 import os
@@ -71,6 +71,46 @@ class Layout:
                 return i
         return None
 
+    def margin_at(self, screen_x: int, screen_y: int,
+                  screen_w: int, screen_h: int) -> Optional[Tuple[int, int]]:
+        """Return (i, j) when the cursor is within MARGIN_PX of the shared
+        boundary between zones i and j.  Margins take priority over zone
+        interiors so the strip always activates near a boundary."""
+        fx = screen_x / screen_w
+        fy = screen_y / screen_h
+        mfx = MARGIN_PX / screen_w
+        mfy = MARGIN_PX / screen_h
+        for i in range(len(self.zones)):
+            for j in range(i + 1, len(self.zones)):
+                a, b = self.zones[i], self.zones[j]
+                for za, zb in ((a, b), (b, a)):
+                    # Vertical shared edge (za right meets zb left)
+                    if abs((za.x + za.w) - zb.x) < _BOUNDARY_TOL:
+                        vy0 = max(za.y, zb.y)
+                        vy1 = min(za.y + za.h, zb.y + zb.h)
+                        bx  = (za.x + za.w + zb.x) / 2
+                        if vy0 < vy1 and vy0 <= fy <= vy1 and abs(fx - bx) <= mfx:
+                            return (i, j)
+                    # Horizontal shared edge (za bottom meets zb top)
+                    if abs((za.y + za.h) - zb.y) < _BOUNDARY_TOL:
+                        hx0 = max(za.x, zb.x)
+                        hx1 = min(za.x + za.w, zb.x + zb.w)
+                        by  = (za.y + za.h + zb.y) / 2
+                        if hx0 < hx1 and hx0 <= fx <= hx1 and abs(fy - by) <= mfy:
+                            return (i, j)
+        return None
+
+    def spanning_zone(self, i: int, j: int) -> Zone:
+        """Return a Zone whose rect is the bounding box of zones i and j."""
+        a, b = self.zones[i], self.zones[j]
+        x = min(a.x, b.x)
+        y = min(a.y, b.y)
+        return Zone(x, y, max(a.x + a.w, b.x + b.w) - x,
+                        max(a.y + a.h, b.y + b.h) - y)
+
+
+MARGIN_PX = 10        # half-width of the between-zone snap strip (pixels)
+_BOUNDARY_TOL = 0.002  # fractional tolerance for zone-edge adjacency detection
 
 DEFAULT_LAYOUTS: Dict[str, Layout] = {
     # 32:9 screen split 8|16|8 — side panels at 25%, centre at 50%

@@ -1,5 +1,5 @@
 import tkinter as tk
-from typing import List, Optional
+from typing import List, Optional, Tuple, Union
 
 from zones import Zone
 
@@ -37,7 +37,7 @@ class ZoneOverlay:
         self.work_y = work_y
         self.work_w = work_w if work_w > 0 else screen_w
         self.work_h = work_h if work_h > 0 else screen_h
-        self.active_zone: Optional[int] = None
+        self.active_zone: Optional[Union[int, Tuple[int, int]]] = None
         self._visible = False
 
         self.root = tk.Toplevel(master)
@@ -67,7 +67,7 @@ class ZoneOverlay:
         self.canvas.delete("all")
         for i, zone in enumerate(self.zones):
             x, y, w, h = zone.pixel_rect(self.work_w, self.work_h)
-            is_active = (i == self.active_zone)
+            is_active = (self.active_zone == i)
             fill   = ACTIVE_COLOR if is_active else ZONE_COLORS[i % len(ZONE_COLORS)]
             border = BORDER + 2 if is_active else BORDER
             self.canvas.create_rectangle(
@@ -82,6 +82,39 @@ class ZoneOverlay:
                 fill="black" if is_active else "white",
                 font=LABEL_FONT,
             )
+        if isinstance(self.active_zone, tuple):
+            self._draw_margin_strip(*self.active_zone)
+
+    def _draw_margin_strip(self, i: int, j: int) -> None:
+        """Draw the 20-px merge strip centred on the boundary between zones i and j."""
+        a, b = self.zones[i], self.zones[j]
+        tol = 0.002
+        M   = 10  # half-width / half-height of the strip in pixels
+        for za, zb in ((a, b), (b, a)):
+            if abs((za.x + za.w) - zb.x) < tol:        # vertical boundary
+                vy0 = max(za.y, zb.y)
+                vy1 = min(za.y + za.h, zb.y + zb.h)
+                if vy0 < vy1:
+                    bx  = int(((za.x + za.w + zb.x) / 2) * self.work_w)
+                    py0 = int(vy0 * self.work_h) + BORDER
+                    py1 = int(vy1 * self.work_h) - BORDER
+                    self.canvas.create_rectangle(
+                        bx - M, py0, bx + M, py1,
+                        fill=ACTIVE_COLOR, outline="white", width=BORDER,
+                    )
+                    return
+            if abs((za.y + za.h) - zb.y) < tol:        # horizontal boundary
+                hx0 = max(za.x, zb.x)
+                hx1 = min(za.x + za.w, zb.x + zb.w)
+                if hx0 < hx1:
+                    by  = int(((za.y + za.h + zb.y) / 2) * self.work_h)
+                    px0 = int(hx0 * self.work_w) + BORDER
+                    px1 = int(hx1 * self.work_w) - BORDER
+                    self.canvas.create_rectangle(
+                        px0, by - M, px1, by + M,
+                        fill=ACTIVE_COLOR, outline="white", width=BORDER,
+                    )
+                    return
 
     # ------------------------------------------------------------------ public API
 
@@ -101,7 +134,7 @@ class ZoneOverlay:
             self._visible = False
             self.root.withdraw()
 
-    def highlight(self, zone_idx: Optional[int]):
+    def highlight(self, zone_idx: Optional[Union[int, Tuple[int, int]]]):
         if zone_idx != self.active_zone:
             self.active_zone = zone_idx
             if self._visible:

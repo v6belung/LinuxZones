@@ -1,6 +1,6 @@
 # LinuxZones
 
-**Current version: 0.1.5**
+**Current version: 0.1.10**
 
 Window zone snapping for Linux — replicates the core FancyZones workflow from Windows PowerToys.
 
@@ -60,6 +60,10 @@ The app starts silently in the background. That's it — you can start snapping 
 5. To cancel without snapping, release the **left** mouse button instead.
 
 > **Quick snap:** a fast right-click (press + release) while dragging works the same way.
+
+### Spanning two zones (margin snap)
+
+When the cursor is within 10 px of the shared boundary between two adjacent zones, a **20-px white strip** appears at that boundary instead of highlighting either zone. Releasing there snaps the window to the **combined bounding box** of both zones — spanning them as one.
 
 ### Keyboard modifier trigger (optional, disabled by default)
 
@@ -157,14 +161,7 @@ git pull
 bash install.sh
 ```
 
-The installer is idempotent — safe to run multiple times. To restart after an update:
-
-```bash
-pkill linuxzones        # stop the running instance
-linuxzones              # start the new version
-```
-
-Or just log out and back in — autostart will launch the new version.
+The installer stops any running instance automatically before copying files, so you don't need to kill it manually. Log out and back in, or run `linuxzones` from a terminal to start the updated version immediately.
 
 ---
 
@@ -194,7 +191,7 @@ Right-click the icon → **Allow Launching**. If it keeps appearing after that, 
 **Window snaps to wrong position or does not snap**
 
 - Some windows resist external repositioning (e.g., fullscreen games, certain Electron apps). This is a per-application restriction, not a bug.
-- Try a small delay: if snapping feels unreliable, open `daemon.py` and increase `SNAP_RELEASE_DELAY` from `0.05` to `0.1`.
+- If snapping feels unreliable, open `daemon.py` and increase `SNAP_DELAY` from `0.10` to `0.15`.
 
 **Overlay appears but right-click does nothing**
 
@@ -230,7 +227,8 @@ cat ~/.local/share/linuxzones/linuxzones.log
 {
   "active_layout": "ultrawide-8-16-8",
   "overlay_opacity": 0.5,
-  "shift_snap": false,
+  "modifier_snap": false,
+  "modifier_key": "shift",
   "layouts": {
     "ultrawide-8-16-8": {
       "name": "ultrawide-8-16-8",
