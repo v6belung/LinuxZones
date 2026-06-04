@@ -138,7 +138,7 @@ class LinuxZonesApp:
         self.daemon = ZoneDaemon(layout, self.ui_queue,
                                  mod_snap=self.mod_snap, mod_key=self.mod_key)
         threading.Thread(
-            target=self.daemon.run, daemon=True, name="linuxzones-record"
+            target=self.daemon.run, daemon=True, name="linuxzones-input"
         ).start()
 
         # SIGUSR1 → open editor.
@@ -152,6 +152,8 @@ class LinuxZonesApp:
         print(f"  Opacity: {int(self.opacity * 100)}%")
         if mod_line:
             print(mod_line)
+        if os.environ.get("WAYLAND_DISPLAY"):
+            print("  Session: Wayland (XWayland input polling)")
         print( "  Drag a window → hold right-click → release to snap to a zone.")
         if self.mod_snap:
             print(f"  Or hold {self.mod_key.capitalize()} while dragging as an alternative snap trigger.")
