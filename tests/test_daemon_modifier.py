@@ -82,7 +82,7 @@ def test_modifier_press_while_dragging_shows_overlay(make_daemon):
     assert d._overlay_by_mod is True
     msgs = drain(d.ui_queue)
     assert ("show",) in msgs
-    assert ("highlight", 0) in msgs
+    assert ("highlight", 0, None) in msgs
 
 
 def test_modifier_release_snaps_and_returns_to_dragging(make_daemon):

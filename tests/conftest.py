@@ -65,6 +65,14 @@ def make_daemon(halves_layout):
         d._mod_last_release_time = -1
         d._mod_keycodes     = frozenset({50})   # pretend keycode 50 == the modifier
 
+        # Multi-monitor (disabled in tests — single-monitor path only)
+        d._multi           = False
+        d._monitors        = []
+        d._monitor_layouts = {}
+        d._layouts         = {}
+        d._current_monitor = None
+        d._last_mon_name   = None
+
         # RECORD context bookkeeping
         d._ctx = None
         d._reconfigure_requested = False

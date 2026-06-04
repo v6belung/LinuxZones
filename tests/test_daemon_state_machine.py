@@ -60,7 +60,7 @@ def test_b3_press_while_dragging_shows_overlay(make_daemon):
     assert d._overlay_by_mod is False
     msgs = drain(d.ui_queue)
     assert ("show",) in msgs
-    assert ("highlight", 0) in msgs       # x=100/1000 = 0.1 → left zone
+    assert ("highlight", 0, None) in msgs       # x=100/1000 = 0.1 → left zone
 
 
 def test_b3_press_ignored_when_not_dragging(make_daemon):
@@ -117,7 +117,7 @@ def test_motion_in_overlay_highlights_new_zone(make_daemon):
     d._handle(make_event(X.MotionNotify, root_x=800, root_y=500))   # right zone
 
     assert d._last_zone == 1
-    assert ("highlight", 1) in drain(d.ui_queue)
+    assert ("highlight", 1, None) in drain(d.ui_queue)
 
 
 def test_motion_in_overlay_same_zone_no_duplicate_highlight(make_daemon):

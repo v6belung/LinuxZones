@@ -161,7 +161,7 @@ def test_motion_into_margin_highlights_pair(make_daemon):
     d._last_zone = 0
     d._handle(make_event(X.MotionNotify, root_x=495, root_y=500))
     assert d._last_zone == (0, 1)
-    assert ("highlight", (0, 1)) in drain(d.ui_queue)
+    assert ("highlight", (0, 1), None) in drain(d.ui_queue)
 
 
 def test_motion_out_of_margin_highlights_zone(make_daemon):
@@ -170,7 +170,7 @@ def test_motion_out_of_margin_highlights_zone(make_daemon):
     d._last_zone = (0, 1)
     d._handle(make_event(X.MotionNotify, root_x=800, root_y=500))
     assert d._last_zone == 1
-    assert ("highlight", 1) in drain(d.ui_queue)
+    assert ("highlight", 1, None) in drain(d.ui_queue)
 
 
 def test_modifier_release_at_margin_snaps_to_pair(make_daemon):
