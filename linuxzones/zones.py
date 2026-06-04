@@ -6,6 +6,46 @@ import math
 import os
 import tempfile
 
+
+@dataclass
+class MonitorInfo:
+    """Geometry of one connected monitor (absolute virtual-screen coordinates)."""
+    name: str
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+def get_monitors() -> List[MonitorInfo]:
+    """Return connected monitors via RandR, sorted left→right then top→bottom.
+
+    Falls back to a single pseudo-monitor covering the full screen when RandR
+    is unavailable or returns nothing.
+    """
+    import Xlib.display
+    dpy = Xlib.display.Display()
+    screen = dpy.screen()
+    fallback = [MonitorInfo("screen", 0, 0,
+                            screen.width_in_pixels, screen.height_in_pixels)]
+    try:
+        from Xlib.ext import randr
+        result = randr.get_monitors(screen.root, True)
+        monitors: List[MonitorInfo] = []
+        for m in result.monitors:
+            try:
+                name = dpy.get_atom_name(m.name)
+            except Exception:
+                name = f"monitor-{len(monitors)}"
+            monitors.append(MonitorInfo(
+                name, m.x, m.y, m.width_in_pixels, m.height_in_pixels))
+        dpy.close()
+        if monitors:
+            return sorted(monitors, key=lambda mo: (mo.y, mo.x))
+    except Exception:
+        dpy.close()
+    return fallback
+
 CONFIG_DIR = os.path.expanduser("~/.config/linuxzones")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
@@ -145,11 +185,12 @@ DEFAULT_LAYOUTS: Dict[str, Layout] = {
 @dataclass
 class ZonesConfig:
     """Runtime configuration: layouts + active selection + display settings."""
-    layouts:  Dict[str, Layout]
-    active:   str
-    opacity:  float = 0.5
-    mod_snap: bool  = False
-    mod_key:  str   = DEFAULT_MODIFIER
+    layouts:         Dict[str, Layout]
+    active:          str
+    opacity:         float = 0.5
+    mod_snap:        bool  = False
+    mod_key:         str   = DEFAULT_MODIFIER
+    monitor_layouts: Dict[str, str] = field(default_factory=dict)
 
 
 def _sanitize_zones(zones: List[Zone]) -> List[Zone]:
@@ -212,7 +253,13 @@ def load_config() -> ZonesConfig:
         legacy_shift = bool(data.get("shift_snap", False))
         modifier_snap = bool(data.get("modifier_snap", legacy_shift))
         modifier_key = _coerce_modifier(data.get("modifier_key", DEFAULT_MODIFIER))
-        return ZonesConfig(layouts, active, opacity, modifier_snap, modifier_key)
+        raw_ml = data.get("monitor_layouts", {})
+        monitor_layouts: Dict[str, str] = {
+            k: v for k, v in raw_ml.items()
+            if isinstance(k, str) and isinstance(v, str) and v in layouts
+        }
+        return ZonesConfig(layouts, active, opacity, modifier_snap, modifier_key,
+                           monitor_layouts)
     except Exception as e:
         print(f"[linuxzones] Config load error: {e}. Using defaults.")
         return ZonesConfig(dict(DEFAULT_LAYOUTS), "ultrawide-8-16-8")
@@ -228,6 +275,7 @@ def save_config(cfg: ZonesConfig) -> None:
         # Keep writing the legacy key so a config saved by a new version can
         # still be read by an older binary (graceful downgrade).
         "shift_snap": bool(cfg.mod_snap) and _coerce_modifier(cfg.mod_key) == "shift",
+        "monitor_layouts": dict(cfg.monitor_layouts),
         "layouts": {name: l.to_dict() for name, l in cfg.layouts.items()},
     }
     # Atomic write: serialise to a temp file in the same directory, fsync it,

@@ -21,7 +21,7 @@ overlay via a thread-safe queue.Queue.
 import queue
 import subprocess
 import time
-from typing import Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import Xlib.display
 import Xlib.X as X
@@ -30,7 +30,7 @@ import Xlib.protocol.rq as rq
 import Xlib.protocol.event as xevent
 import Xlib.Xatom
 
-from .zones import Layout
+from .zones import Layout, MonitorInfo
 
 DRAG_THRESHOLD = 8     # px of movement before left-drag is considered active
 SNAP_DELAY     = 0.10  # seconds to wait after faking button-1 release
@@ -64,9 +64,20 @@ class _State:
 
 class ZoneDaemon:
     def __init__(self, layout: Layout, ui_queue: queue.Queue,
-                 mod_snap: bool = False, mod_key: str = "shift"):
+                 mod_snap: bool = False, mod_key: str = "shift",
+                 monitors: Optional[List[MonitorInfo]] = None,
+                 monitor_layouts: Optional[dict] = None,
+                 layouts: Optional[dict] = None):
         self.layout   = layout
         self.ui_queue = ui_queue
+
+        # Multi-monitor support
+        self._monitors:        List[MonitorInfo] = monitors or []
+        self._monitor_layouts: dict              = monitor_layouts or {}
+        self._layouts:         dict              = layouts or {}
+        self._multi = bool(self._monitors and len(self._monitors) > 1)
+        # Tracks which monitor the cursor is currently on (set in _zone_at).
+        self._current_monitor: Optional[MonitorInfo] = None
 
         # Two separate Display connections are required:
         #   record_dpy  – owned by the RECORD blocking loop
@@ -160,12 +171,38 @@ class ZoneDaemon:
             pass
         return 0, 0, self.screen_w, self.screen_h
 
-    def _zone_at(self, root_x: int, root_y: int) -> Optional[Union[int, Tuple[int, int]]]:
-        """Zone or margin pair at absolute screen position, using work-area fractions.
+    def _monitor_at(self, root_x: int, root_y: int) -> Optional[MonitorInfo]:
+        """Return the monitor containing (root_x, root_y), or None."""
+        for mon in self._monitors:
+            if mon.x <= root_x < mon.x + mon.w and mon.y <= root_y < mon.y + mon.h:
+                return mon
+        return None
 
-        Margins (within MARGIN_PX of a shared zone boundary) take priority
-        over zone interiors so the strip always activates near a boundary.
+    def _layout_for_monitor(self, mon: MonitorInfo) -> Layout:
+        """Return the Layout assigned to mon, falling back to self.layout."""
+        name = self._monitor_layouts.get(mon.name)
+        if name and name in self._layouts:
+            return self._layouts[name]
+        return self.layout
+
+    def _zone_at(self, root_x: int, root_y: int) -> Optional[Union[int, Tuple[int, int]]]:
+        """Zone or margin pair at absolute screen position.
+
+        In multi-monitor mode uses per-monitor layout and geometry.
+        Margins take priority over zone interiors near a shared boundary.
         """
+        if self._multi:
+            mon = self._monitor_at(root_x, root_y)
+            if mon is not None:
+                self._current_monitor = mon
+                layout = self._layout_for_monitor(mon)
+                sx, sy = root_x - mon.x, root_y - mon.y
+                margin = layout.margin_at(sx, sy, mon.w, mon.h)
+                if margin is not None:
+                    return margin
+                return layout.zone_at(sx, sy, mon.w, mon.h)
+
+        self._current_monitor = None
         sx, sy = root_x - self._work_x, root_y - self._work_y
         margin = self.layout.margin_at(sx, sy, self._work_w, self._work_h)
         if margin is not None:
@@ -275,16 +312,26 @@ class ZoneDaemon:
         self._work_x, self._work_y, self._work_w, self._work_h = wx, wy, ww, wh
 
         win_id = win.id
+
+        # Determine origin and size for this snap operation.
+        mon = self._current_monitor
+        if self._multi and mon is not None:
+            snap_layout = self._layout_for_monitor(mon)
+            ox, oy, ow, oh = mon.x, mon.y, mon.w, mon.h
+        else:
+            snap_layout = self.layout
+            ox, oy, ow, oh = wx, wy, ww, wh
+
         if isinstance(target, tuple):
-            zone = self.layout.spanning_zone(*target)
+            zone = snap_layout.spanning_zone(*target)
             zone_desc = f"margin{target}"
         else:
-            zone = self.layout.zones[target]
+            zone = snap_layout.zones[target]
             zone_desc = str(target)
-        zx = wx + int(zone.x * ww)
-        zy = wy + int(zone.y * wh)
-        zw = int(zone.w * ww)
-        zh = int(zone.h * wh)
+        zx = ox + int(zone.x * ow)
+        zy = oy + int(zone.y * oh)
+        zw = int(zone.w * ow)
+        zh = int(zone.h * oh)
 
         fl, fr, ft, fb = self._frame_extents(win)
         gl, gr, gt, gb = self._gtk_frame_extents(win)
@@ -412,8 +459,9 @@ class ZoneDaemon:
                 self._state = _State.OVERLAY_ACTIVE
                 zone_idx = self._zone_at(event.root_x, event.root_y)
                 self._last_zone = zone_idx
+                mon_name = self._current_monitor.name if self._current_monitor else None
                 self.ui_queue.put(("show",))
-                self.ui_queue.put(("highlight", zone_idx))
+                self.ui_queue.put(("highlight", zone_idx, mon_name))
             return
 
         elif etype == X.KeyRelease:
@@ -454,8 +502,9 @@ class ZoneDaemon:
                 self._overlay_by_mod = False
                 zone_idx = self._zone_at(event.root_x, event.root_y)
                 self._last_zone = zone_idx
+                mon_name = self._current_monitor.name if self._current_monitor else None
                 self.ui_queue.put(("show",))
-                self.ui_queue.put(("highlight", zone_idx))
+                self.ui_queue.put(("highlight", zone_idx, mon_name))
 
         elif etype == X.ButtonRelease:
             btn = event.detail
@@ -502,9 +551,11 @@ class ZoneDaemon:
 
             if self._state == _State.OVERLAY_ACTIVE:
                 zone_idx = self._zone_at(event.root_x, event.root_y)
-                if zone_idx != self._last_zone:
+                mon_name = self._current_monitor.name if self._current_monitor else None
+                if zone_idx != self._last_zone or mon_name != getattr(self, "_last_mon_name", None):
                     self._last_zone = zone_idx
-                    self.ui_queue.put(("highlight", zone_idx))
+                    self._last_mon_name = mon_name
+                    self.ui_queue.put(("highlight", zone_idx, mon_name))
 
     # ------------------------------------------------------------------ RECORD loop
 
@@ -611,6 +662,18 @@ class ZoneDaemon:
     def update_layout(self, layout: Layout) -> None:
         """Thread-safe layout swap."""
         self.layout = layout
+
+    def update_monitor_config(
+        self,
+        monitors: List[MonitorInfo],
+        monitor_layouts: dict,
+        layouts: dict,
+    ) -> None:
+        """Thread-safe update of multi-monitor layout mapping."""
+        self._monitors        = monitors
+        self._monitor_layouts = monitor_layouts
+        self._layouts         = layouts
+        self._multi           = bool(monitors and len(monitors) > 1)
 
     def update_mod_snap(self, enabled: bool, mod_key: str = "shift") -> None:
         """Toggle modifier snap and/or change the modifier key.

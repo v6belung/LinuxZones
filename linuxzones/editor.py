@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import ttk, simpledialog, messagebox
 from typing import Dict, List, Optional, Tuple
 
-from .zones import Zone, Layout, ZonesConfig, DEFAULT_LAYOUTS, VALID_MODIFIERS, _coerce_modifier
+from .zones import Zone, Layout, ZonesConfig, MonitorInfo, DEFAULT_LAYOUTS, VALID_MODIFIERS, _coerce_modifier
 
 GRID = 0.05   # snap-to-grid step (5 % of screen)
 
@@ -54,12 +54,22 @@ class ZoneEditor:
         modifier_snap: bool = False,
         modifier_key: str = "shift",
         master: Optional[tk.Tk] = None,
+        monitors: Optional[List[MonitorInfo]] = None,
+        monitor_layouts: Optional[Dict[str, str]] = None,
     ):
         self.layouts       = copy.deepcopy(layouts)
         self.active_layout = active_layout
         self.screen_w      = screen_w
         self.screen_h      = screen_h
         self.result: Optional[ZonesConfig] = None
+
+        # Multi-monitor
+        self._monitors:        List[MonitorInfo] = monitors or []
+        self._monitor_layouts: Dict[str, str]    = dict(monitor_layouts or {})
+        self._multi = bool(self._monitors and len(self._monitors) > 1)
+
+        # Currently selected monitor in the dropdown ("" = shared / all)
+        self._sel_monitor: str = ""
 
         # Scale preview canvas to ≤800 px wide, preserving aspect ratio
         self.pw = 800
@@ -242,6 +252,26 @@ class ZoneEditor:
             text="Draw: click-drag  ·  Select: left-click  ·  Delete: right-click",
         ).pack(pady=(0, 4))
 
+        # Monitor selector (only shown when multiple monitors are detected)
+        if self._multi:
+            mon_row = ttk.Frame(right)
+            mon_row.pack(fill="x", pady=(0, 6))
+            ttk.Label(mon_row, text="Monitor:").pack(side="left", padx=(0, 6))
+            _all_label = "All monitors (shared layout)"
+            mon_choices = [_all_label] + [
+                f"{m.name}  {m.w}×{m.h}" for m in self._monitors
+            ]
+            self._mon_var = tk.StringVar(value=_all_label)
+            self._mon_combo = ttk.Combobox(
+                mon_row,
+                textvariable=self._mon_var,
+                values=mon_choices,
+                state="readonly",
+                width=32,
+            )
+            self._mon_combo.pack(side="left")
+            self._mon_combo.bind("<<ComboboxSelected>>", self._on_monitor_select)
+
         self.canvas = tk.Canvas(
             right, width=self.pw, height=self.ph,
             bg=_CANVAS_BG,
@@ -271,6 +301,32 @@ class ZoneEditor:
         # IntVar instead for a clean integer display.
         self._opacity_lbl.config(text=f"{self.opacity_var.get()}%")
 
+    # ── Monitor selection ─────────────────────────────────────────────────────
+
+    def _on_monitor_select(self, _=None) -> None:
+        label = self._mon_var.get()
+        if label.startswith("All"):
+            self._sel_monitor = ""
+        else:
+            # Label is "NAME  WxH" — extract the name (text before the spaces)
+            self._sel_monitor = label.split()[0]
+            # Resize canvas to this monitor's aspect ratio
+            mon = next((m for m in self._monitors if m.name == self._sel_monitor), None)
+            if mon:
+                self.pw = 800
+                self.ph = int(800 * mon.h / mon.w)
+                self.canvas.config(width=self.pw, height=self.ph)
+        self._selected = None
+        self._refresh_list()
+        self._update_info()
+        self._redraw()
+
+    def _active_layout_for_sel(self) -> str:
+        """The layout name that is currently 'active' for the selected monitor."""
+        if self._sel_monitor:
+            return self._monitor_layouts.get(self._sel_monitor, self.active_layout)
+        return self.active_layout
+
     # ── Modifier snap ───────────────────────────────────────────────────────────
 
     def _on_mod_toggle(self) -> None:
@@ -282,32 +338,40 @@ class ZoneEditor:
     # ── Layout list ───────────────────────────────────────────────────────────
 
     def _refresh_list(self) -> None:
-        """Repopulate the listbox; mark the active layout with ●."""
+        """Repopulate the listbox; mark the layout active for the selected monitor."""
         self.lb.delete(0, "end")
         self._layout_names = list(self.layouts.keys())
+        effective = self._active_layout_for_sel()
         for name in self._layout_names:
-            prefix = "● " if name == self.active_layout else "  "
+            prefix = "● " if name == effective else "  "
             self.lb.insert("end", prefix + name)
-        if self.active_layout in self._layout_names:
-            idx = self._layout_names.index(self.active_layout)
+        # Select (highlight) the effective layout row
+        if effective in self._layout_names:
+            idx = self._layout_names.index(effective)
             self.lb.selection_set(idx)
             self.lb.see(idx)
 
     @property
     def _layout(self) -> Layout:
-        return self.layouts[self.active_layout]
+        return self.layouts[self._active_layout_for_sel()]
 
     def _on_layout_select(self, _=None) -> None:
         sel = self.lb.curselection()
         if not sel:
             return
         idx = sel[0]
-        if 0 <= idx < len(self._layout_names):
-            self.active_layout = self._layout_names[idx]
-            self._selected = None
-            self._refresh_list()
-            self._update_info()
-            self._redraw()
+        if not (0 <= idx < len(self._layout_names)):
+            return
+        name = self._layout_names[idx]
+        if self._sel_monitor:
+            # Assign this layout to the selected monitor
+            self._monitor_layouts[self._sel_monitor] = name
+        else:
+            self.active_layout = name
+        self._selected = None
+        self._refresh_list()
+        self._update_info()
+        self._redraw()
 
     # ── Canvas interactions ───────────────────────────────────────────────────
 
@@ -419,9 +483,12 @@ class ZoneEditor:
         if self._selected is None or self._selected >= len(self._layout.zones):
             self.zone_var.set("Click a zone to select it")
             return
-        z    = self._layout.zones[self._selected]
-        px_w = int(z.w * self.screen_w)
-        px_h = int(z.h * self.screen_h)
+        z = self._layout.zones[self._selected]
+        mon = next((m for m in self._monitors if m.name == self._sel_monitor), None)
+        ref_w = mon.w if mon else self.screen_w
+        ref_h = mon.h if mon else self.screen_h
+        px_w = int(z.w * ref_w)
+        px_h = int(z.h * ref_h)
         name_part = f"  ·  {z.name}" if z.name else ""
         self.zone_var.set(
             f"Zone {self._selected + 1}{name_part}\n"
@@ -542,11 +609,12 @@ class ZoneEditor:
 
     def _save(self) -> None:
         self.result = ZonesConfig(
-            layouts  = self.layouts,
-            active   = self.active_layout,
-            opacity  = self.opacity_var.get() / 100,
-            mod_snap = self.mod_snap_var.get(),
-            mod_key  = _LABEL_TO_MOD.get(self.mod_key_var.get(), "shift"),
+            layouts         = self.layouts,
+            active          = self.active_layout,
+            opacity         = self.opacity_var.get() / 100,
+            mod_snap        = self.mod_snap_var.get(),
+            mod_key         = _LABEL_TO_MOD.get(self.mod_key_var.get(), "shift"),
+            monitor_layouts = dict(self._monitor_layouts),
         )
         self.root.destroy()
 

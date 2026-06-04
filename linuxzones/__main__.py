@@ -48,6 +48,11 @@ def _get_screen_size():
     return w, h
 
 
+def _get_monitors():
+    from .zones import get_monitors
+    return get_monitors()
+
+
 def _get_work_area():
     """Return (x, y, w, h) of the usable work area from _NET_WORKAREA.
 
@@ -96,11 +101,12 @@ class LinuxZonesApp:
         self._save_config = save_config
 
         cfg = load_config()
-        self.layouts  = cfg.layouts
-        self.active   = cfg.active
-        self.opacity  = cfg.opacity
-        self.mod_snap = cfg.mod_snap
-        self.mod_key  = cfg.mod_key
+        self.layouts         = cfg.layouts
+        self.active          = cfg.active
+        self.opacity         = cfg.opacity
+        self.mod_snap        = cfg.mod_snap
+        self.mod_key         = cfg.mod_key
+        self.monitor_layouts = cfg.monitor_layouts
 
         if layout_override:
             if layout_override not in self.layouts:
@@ -109,6 +115,7 @@ class LinuxZonesApp:
                 sys.exit(1)
             self.active = layout_override
 
+        self.monitors = _get_monitors()
         self.screen_w, self.screen_h = _get_screen_size()
         self.work_x, self.work_y, self.work_w, self.work_h = _get_work_area()
         self.ui_queue: queue.Queue = queue.Queue()
@@ -131,12 +138,20 @@ class LinuxZonesApp:
             work_y=self.work_y,
             work_w=self.work_w,
             work_h=self.work_h,
+            monitors=self.monitors,
+            monitor_layouts=self.monitor_layouts,
+            layouts=self.layouts,
         )
 
         # X11 event daemon (background thread)
         from .daemon import ZoneDaemon
-        self.daemon = ZoneDaemon(layout, self.ui_queue,
-                                 mod_snap=self.mod_snap, mod_key=self.mod_key)
+        self.daemon = ZoneDaemon(
+            layout, self.ui_queue,
+            mod_snap=self.mod_snap, mod_key=self.mod_key,
+            monitors=self.monitors,
+            monitor_layouts=self.monitor_layouts,
+            layouts=self.layouts,
+        )
         threading.Thread(
             target=self.daemon.run, daemon=True, name="linuxzones-record"
         ).start()
@@ -172,7 +187,8 @@ class LinuxZonesApp:
                 elif kind == "hide":
                     self.overlay.hide()
                 elif kind == "highlight":
-                    self.overlay.highlight(msg[1])
+                    mon_name = msg[2] if len(msg) > 2 else None
+                    self.overlay.highlight(msg[1], monitor_name=mon_name)
                 elif kind == "update_layout":
                     self.overlay.update_zones(msg[1].zones)
                 elif kind == "open_editor":
@@ -203,22 +219,29 @@ class LinuxZonesApp:
             opacity=self.opacity,
             modifier_snap=self.mod_snap,
             modifier_key=self.mod_key,
-            master=self.root,           # Toplevel mode; shares our mainloop
+            master=self.root,
+            monitors=self.monitors,
+            monitor_layouts=self.monitor_layouts,
         )
-        result = editor.run()           # blocks via wait_window()
+        result = editor.run()
 
         if result:
-            self.layouts  = result.layouts
-            self.active   = result.active
-            self.opacity  = result.opacity
-            self.mod_snap = result.mod_snap
-            self.mod_key  = result.mod_key
+            self.layouts         = result.layouts
+            self.active          = result.active
+            self.opacity         = result.opacity
+            self.mod_snap        = result.mod_snap
+            self.mod_key         = result.mod_key
+            self.monitor_layouts = result.monitor_layouts
             save_config(result)
 
             new_layout = result.layouts[result.active]
             self.overlay.update_zones(new_layout.zones)
             self.overlay.set_opacity(result.opacity)
+            self.overlay.update_monitor_config(
+                self.monitors, self.monitor_layouts, self.layouts)
             self.daemon.update_layout(new_layout)
+            self.daemon.update_monitor_config(
+                self.monitors, self.monitor_layouts, self.layouts)
             self.daemon.update_mod_snap(result.mod_snap, result.mod_key)
 
             print(
@@ -343,9 +366,13 @@ def cmd_editor():
 
     cfg = load_config()
     screen_w, screen_h = _get_screen_size()
+    monitors = _get_monitors()
 
-    editor = ZoneEditor(cfg.layouts, cfg.active, screen_w, screen_h,
-                        opacity=cfg.opacity, modifier_snap=cfg.mod_snap, modifier_key=cfg.mod_key)
+    editor = ZoneEditor(
+        cfg.layouts, cfg.active, screen_w, screen_h,
+        opacity=cfg.opacity, modifier_snap=cfg.mod_snap, modifier_key=cfg.mod_key,
+        monitors=monitors, monitor_layouts=cfg.monitor_layouts,
+    )
     result = editor.run()
     if result:
         save_config(result)
