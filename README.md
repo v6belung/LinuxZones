@@ -43,35 +43,6 @@ After installation, **double-click the LinuxZones icon** on your desktop to star
 
 > **Cinnamon:** if the desktop icon shows an "Allow Launching?" prompt, right-click → **Allow Launching**, then double-click. One-time only.
 
----
-
-## Bazzite / immutable Linux
-
-On ostree-based systems (Bazzite, Fedora Silverblue, Kinoite, Aurora, etc.) the root
-filesystem is read-only, so the Python package must be installed via `pipx`. If `pipx`
-isn't already present, install it first:
-
-```bash
-pip install --user pipx --break-system-packages
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-Then run the normal installer — it auto-detects the immutable system and routes through
-`pipx` instead of `pip`.
-
-**wmctrl** (required for window snapping) is not pre-installed. Layer it before running the installer:
-
-```bash
-rpm-ostree install wmctrl
-# reboot, then run bash install.sh
-```
-
-> **Wayland limitation:** LinuxZones uses the X11 RECORD extension and `wmctrl`, which
-> only work with windows running under **XWayland**. Native Wayland windows (many KDE
-> system apps on Bazzite KDE, most GNOME apps) cannot be detected or snapped. For the
-> best experience, prefer apps that run under XWayland, or force XWayland mode for
-> specific apps with `DISPLAY=:0 app-name`.
 
 ---
 

@@ -571,136 +571,18 @@ class ZoneDaemon:
             "client_died":      False,
         }
 
-    # ------------------------------------------------------------------ polling loop (Wayland fallback)
-
-    def _run_poll_loop(self) -> None:
-        """Input monitor using XQueryPointer — used on Wayland/XWayland sessions.
-
-        The X11 RECORD extension only intercepts events that flow through the X
-        server.  On a Wayland session, native Wayland window events are handled
-        by the compositor and never reach RECORD.  XQueryPointer, by contrast,
-        returns the global pointer position and button/modifier mask regardless
-        of whether the window under the cursor is XWayland or Wayland-native,
-        because the Wayland compositor keeps the XWayland X server in sync.
-
-        The state machine (_handle) is reused unchanged: we synthesise the same
-        ButtonPress/ButtonRelease/MotionNotify/KeyPress/KeyRelease SimpleNamespace
-        objects it expects, derived from pointer-state deltas between polls.
-
-        After any event that may have triggered _snap() (BTN3 or modifier release),
-        we re-read the pointer to see XTest-adjusted state before updating
-        prev_btn1, preventing a spurious BTN1_RELEASE on the next tick.
-        """
-        from types import SimpleNamespace
-        import os
-        import time as _time
-
-        # Modifier-key → XQueryPointer mask bit
-        _MOD_MASKS = {
-            "shift": X.ShiftMask,
-            "ctrl":  X.ControlMask,
-            "alt":   X.Mod1Mask,
-        }
-
-        print("[linuxzones] Wayland session — using XQueryPointer polling for input")
-        print("[linuxzones]   (overlay + snap work for XWayland windows;"
-              " native Wayland windows cannot be repositioned)")
-
-        prev_btn1 = False
-        prev_btn3 = False
-        prev_mod  = False
-        prev_rx   = 0
-        prev_ry   = 0
-        tick      = 0
-
-        while True:
-            tick += 1
-            try:
-                ptr = self.root.query_pointer()
-            except Exception:
-                break
-
-            btn1 = bool(ptr.mask & X.Button1Mask)
-            btn3 = bool(ptr.mask & X.Button3Mask)
-            rx, ry = ptr.root_x, ptr.root_y
-
-            mod_mask = _MOD_MASKS.get(self._mod_key, X.ShiftMask)
-            mod = bool(ptr.mask & mod_mask) if self._mod_snap else False
-            # Recompute each tick so modifier-key changes from update_mod_snap()
-            # are picked up without restarting the loop.
-            fake_kc = next(iter(self._mod_keycodes), 0) if self._mod_snap else 0
-
-            # Motion is delivered first so the drag-threshold check in _handle()
-            # runs before a BTN3/modifier press in the same poll can open the overlay.
-            if (rx, ry) != (prev_rx, prev_ry) or self._state != _State.IDLE:
-                self._handle(SimpleNamespace(
-                    type=X.MotionNotify, detail=0,
-                    root_x=rx, root_y=ry, time=tick))
-
-            if btn1 and not prev_btn1:
-                self._handle(SimpleNamespace(
-                    type=X.ButtonPress, detail=1,
-                    root_x=rx, root_y=ry, time=tick))
-            elif not btn1 and prev_btn1:
-                self._handle(SimpleNamespace(
-                    type=X.ButtonRelease, detail=1,
-                    root_x=rx, root_y=ry, time=tick))
-
-            # BTN3 or modifier release can call _snap(), which sends a synthetic
-            # BTN1 release via XTest to cancel the WM grab.  XTest changes the
-            # X server's button state so XQueryPointer would temporarily report
-            # btn1=False even while the physical button is held.  Re-reading
-            # after the event lets us sync prev_btn1 to that adjusted value,
-            # so the next poll won't generate a spurious BTN1_RELEASE.
-            resync = False
-
-            if btn3 and not prev_btn3:
-                self._handle(SimpleNamespace(
-                    type=X.ButtonPress, detail=3,
-                    root_x=rx, root_y=ry, time=tick))
-            elif not btn3 and prev_btn3:
-                self._handle(SimpleNamespace(
-                    type=X.ButtonRelease, detail=3,
-                    root_x=rx, root_y=ry, time=tick))
-                resync = True
-
-            if self._mod_snap and fake_kc:
-                if mod and not prev_mod:
-                    self._handle(SimpleNamespace(
-                        type=X.KeyPress, detail=fake_kc,
-                        root_x=rx, root_y=ry, time=tick))
-                elif not mod and prev_mod:
-                    self._handle(SimpleNamespace(
-                        type=X.KeyRelease, detail=fake_kc,
-                        root_x=rx, root_y=ry, time=tick))
-                    resync = True
-
-            if resync:
-                try:
-                    ptr2 = self.root.query_pointer()
-                    btn1 = bool(ptr2.mask & X.Button1Mask)
-                except Exception:
-                    pass
-
-            prev_btn1, prev_btn3, prev_mod = btn1, btn3, mod
-            prev_rx, prev_ry = rx, ry
-            _time.sleep(0.008)   # ~120 Hz
-
     # ------------------------------------------------------------------ RECORD loop
 
     def run(self) -> None:
-        """Start the input event loop.
+        """Start the RECORD event loop.
 
-        On Wayland sessions (WAYLAND_DISPLAY is set) the X11 RECORD extension
-        only sees XWayland events, so we skip it and use XQueryPointer polling
-        instead (_run_poll_loop).  RECORD is also used as the primary loop on
-        native X11, with polling as a fallback if the extension is unavailable.
+        record_enable_context() blocks until another thread calls
+        record_disable_context() on the same context XID.  We exploit that to
+        rebuild the context with a new event range when modifier snap is
+        toggled, so the keyboard subscription always matches the setting.  The loop only
+        re-creates the context for an intentional reconfigure; any other return
+        means the display went away, so we stop rather than busy-loop.
         """
-        import os
-        if os.environ.get("WAYLAND_DISPLAY"):
-            self._run_poll_loop()
-            return
-
         while True:
             self._reconfigure_requested = False
             try:
@@ -708,8 +590,7 @@ class ZoneDaemon:
                     0, [record.AllClients], [self._record_spec()],
                 )
             except Exception as e:
-                print(f"[linuxzones] RECORD unavailable ({e}); falling back to polling.")
-                self._run_poll_loop()
+                print(f"[linuxzones] RECORD unavailable ({e}); input monitoring disabled.")
                 return
             try:
                 self.record_dpy.record_enable_context(self._ctx, self._record_callback)
