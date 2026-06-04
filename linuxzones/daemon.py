@@ -30,7 +30,7 @@ import Xlib.protocol.rq as rq
 import Xlib.protocol.event as xevent
 import Xlib.Xatom
 
-from zones import Layout
+from .zones import Layout
 
 DRAG_THRESHOLD = 8     # px of movement before left-drag is considered active
 SNAP_DELAY     = 0.10  # seconds to wait after faking button-1 release

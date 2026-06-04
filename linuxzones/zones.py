@@ -142,6 +142,16 @@ DEFAULT_LAYOUTS: Dict[str, Layout] = {
 }
 
 
+@dataclass
+class ZonesConfig:
+    """Runtime configuration: layouts + active selection + display settings."""
+    layouts:  Dict[str, Layout]
+    active:   str
+    opacity:  float = 0.5
+    mod_snap: bool  = False
+    mod_key:  str   = DEFAULT_MODIFIER
+
+
 def _sanitize_zones(zones: List[Zone]) -> List[Zone]:
     """Validate zones loaded from an untrusted / hand-edited config so the
     geometry that reaches wmctrl and the overlay is always on-screen and sane.
@@ -172,17 +182,16 @@ def _sanitize_zones(zones: List[Zone]) -> List[Zone]:
     return clean
 
 
-def load_config() -> Tuple[Dict[str, Layout], str, float, bool, str]:
-    """Returns (layouts, active_layout_name, overlay_opacity, modifier_snap,
-    modifier_key).  Falls back to defaults.
+def load_config() -> ZonesConfig:
+    """Load config from disk and return a ZonesConfig.  Falls back to defaults.
 
     Backward compatibility: configs written before the generic-modifier feature
     only have a boolean ``shift_snap`` key.  When the newer ``modifier_snap`` /
     ``modifier_key`` keys are absent, a truthy legacy ``shift_snap`` is mapped
-    to (modifier_snap=True, modifier_key="shift").
+    to (mod_snap=True, mod_key="shift").
     """
     if not os.path.exists(CONFIG_FILE):
-        return dict(DEFAULT_LAYOUTS), "ultrawide-8-16-8", 0.5, False, DEFAULT_MODIFIER
+        return ZonesConfig(dict(DEFAULT_LAYOUTS), "ultrawide-8-16-8")
     try:
         with open(CONFIG_FILE) as f:
             data = json.load(f)
@@ -203,29 +212,23 @@ def load_config() -> Tuple[Dict[str, Layout], str, float, bool, str]:
         legacy_shift = bool(data.get("shift_snap", False))
         modifier_snap = bool(data.get("modifier_snap", legacy_shift))
         modifier_key = _coerce_modifier(data.get("modifier_key", DEFAULT_MODIFIER))
-        return layouts, active, opacity, modifier_snap, modifier_key
+        return ZonesConfig(layouts, active, opacity, modifier_snap, modifier_key)
     except Exception as e:
         print(f"[linuxzones] Config load error: {e}. Using defaults.")
-        return dict(DEFAULT_LAYOUTS), "ultrawide-8-16-8", 0.5, False, DEFAULT_MODIFIER
+        return ZonesConfig(dict(DEFAULT_LAYOUTS), "ultrawide-8-16-8")
 
 
-def save_config(
-    layouts: Dict[str, Layout],
-    active_layout: str,
-    opacity: float = 0.5,
-    modifier_snap: bool = False,
-    modifier_key: str = DEFAULT_MODIFIER,
-) -> None:
+def save_config(cfg: ZonesConfig) -> None:
     os.makedirs(CONFIG_DIR, exist_ok=True)
     payload = {
-        "active_layout": active_layout,
-        "overlay_opacity": round(opacity, 2),
-        "modifier_snap": bool(modifier_snap),
-        "modifier_key": _coerce_modifier(modifier_key),
+        "active_layout": cfg.active,
+        "overlay_opacity": round(cfg.opacity, 2),
+        "modifier_snap": bool(cfg.mod_snap),
+        "modifier_key": _coerce_modifier(cfg.mod_key),
         # Keep writing the legacy key so a config saved by a new version can
         # still be read by an older binary (graceful downgrade).
-        "shift_snap": bool(modifier_snap) and _coerce_modifier(modifier_key) == "shift",
-        "layouts": {name: l.to_dict() for name, l in layouts.items()},
+        "shift_snap": bool(cfg.mod_snap) and _coerce_modifier(cfg.mod_key) == "shift",
+        "layouts": {name: l.to_dict() for name, l in cfg.layouts.items()},
     }
     # Atomic write: serialise to a temp file in the same directory, fsync it,
     # then os.replace() (atomic on POSIX) over the real config.  A crash or

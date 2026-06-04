@@ -22,6 +22,13 @@ Window zone snapping for Linux — the core FancyZones workflow from Windows Pow
 sudo apt install ./linuxzones_*.deb
 ```
 
+After installation, enable crash-recovery autostart:
+
+```bash
+systemctl --user enable linuxzones.service
+systemctl --user start linuxzones.service
+```
+
 **All other distros** — clone and run the installer:
 
 ```bash
@@ -29,6 +36,8 @@ git clone https://github.com/v6belung/LinuxZones.git
 cd LinuxZones
 bash install.sh
 ```
+
+The installer sets up everything: installs the Python package to `~/.local/bin/linuxzones`, registers a **systemd user service** for crash recovery, and places a desktop shortcut.
 
 After installation, **double-click the LinuxZones icon** on your desktop to start. The app runs silently in the background and starts automatically on every login.
 
@@ -101,15 +110,26 @@ Zone coordinates are stored as fractions of the work area (0.0–1.0), so layout
 
 ---
 
+## Service management
+
+LinuxZones runs as a **systemd user service** (installed by `install.sh` or the `.deb`), which means it automatically restarts on crashes.
+
+```bash
+systemctl --user status linuxzones     # check if running
+systemctl --user restart linuxzones    # restart after a config change
+systemctl --user stop linuxzones       # stop
+journalctl --user -u linuxzones -f     # stream live logs
+```
+
 ## Logs
 
-When launched from the desktop icon, output goes to:
+When launched from the desktop icon or the systemd service, output goes to:
 
 ```
 ~/.local/share/linuxzones/linuxzones.log
 ```
 
-Each session appends a timestamped block.
+Each session appends a timestamped block. When running under systemd, logs are also available via `journalctl --user -u linuxzones`.
 
 ---
 
@@ -139,7 +159,7 @@ git pull
 bash install.sh
 ```
 
-The installer stops any running instance automatically. Log out and back in, or run `linuxzones` to start the updated version immediately.
+The installer stops any running instance automatically and restarts it after installing.
 
 ---
 
@@ -159,6 +179,30 @@ linuxzones --version
 
 **"Allow Launching?" dialog on every launch**
 Right-click the icon → **Allow Launching**. If it persists, re-run `bash install.sh`.
+
+**Service fails to start at login (DISPLAY not set)**
+Some setups don't propagate `DISPLAY` to the systemd user environment automatically. Check with:
+```bash
+systemctl --user show-environment | grep DISPLAY
+```
+If it's missing, add this to your `~/.profile` or `~/.bash_profile`:
+```bash
+dbus-update-activation-environment --systemd DISPLAY XAUTHORITY
+```
+Then log out and back in. Alternatively, fall back to the `.desktop` autostart:
+```bash
+systemctl --user disable linuxzones.service
+cp ~/.config/systemd/user/linuxzones.service /dev/null   # disable service
+mkdir -p ~/.config/autostart
+cat > ~/.config/autostart/linuxzones.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=LinuxZones
+Exec=/home/$USER/.local/bin/linuxzones
+Terminal=false
+X-GNOME-Autostart-enabled=true
+EOF
+```
 
 **Overlay doesn't appear**
 - Check you're in an X11 session: `echo $DISPLAY` should print `:0` or similar.

@@ -5,7 +5,7 @@ set -euo pipefail
 
 VERSION=${1:-$(python3 -c "
 import re, sys
-m = re.search(r'__version__ = [\"\'](.*?)[\"\']', open('linuxzones.py').read())
+m = re.search(r'__version__ = [\"\'](.*?)[\"\']', open('linuxzones/__init__.py').read())
 sys.stdout.write(m.group(1))
 ")}
 PKG="linuxzones_${VERSION}_all"
@@ -19,11 +19,14 @@ install -d \
   "$PKG/usr/bin" \
   "$PKG/usr/share/applications" \
   "$PKG/usr/share/icons/hicolor/128x128/apps" \
+  "$PKG/usr/lib/systemd/user" \
   "$PKG/etc/xdg/autostart"
 
-# ── source files ────────────────────────────────────────────────────────────
-cp daemon.py editor.py linuxzones.py overlay.py zones.py \
-   "$PKG/usr/lib/linuxzones/"
+# ── Python package ────────────────────────────────────────────────────────────
+cp -r linuxzones "$PKG/usr/lib/linuxzones/"
+
+# ── systemd user service ──────────────────────────────────────────────────────
+cp linuxzones.service "$PKG/usr/lib/systemd/user/linuxzones.service"
 
 # ── icon ─────────────────────────────────────────────────────────────────────
 ICON_DST="$PKG/usr/share/icons/hicolor/128x128/apps/linuxzones.png"
@@ -51,9 +54,12 @@ PYEOF
 fi
 
 # ── launcher ─────────────────────────────────────────────────────────────────
+# Sets PYTHONPATH so Python finds the linuxzones package in /usr/lib/linuxzones/,
+# then uses -m to invoke it as a module (respects __main__.py entry point).
 cat > "$PKG/usr/bin/linuxzones" << 'EOF'
 #!/usr/bin/env bash
-exec -a linuxzones python3 /usr/lib/linuxzones/linuxzones.py "$@"
+export PYTHONPATH=/usr/lib/linuxzones${PYTHONPATH:+:$PYTHONPATH}
+exec -a linuxzones python3 -m linuxzones "$@"
 EOF
 chmod 755 "$PKG/usr/bin/linuxzones"
 
@@ -94,6 +100,12 @@ cat > "$PKG/DEBIAN/postinst" << 'EOF'
 #!/bin/bash
 set -e
 gtk-update-icon-cache /usr/share/icons/hicolor --ignore-theme-index -q 2>/dev/null || true
+echo ""
+echo "LinuxZones installed. To enable crash recovery via systemd:"
+echo "  systemctl --user enable linuxzones.service"
+echo "  systemctl --user start linuxzones.service"
+echo ""
+echo "Or start it now from the application menu / desktop shortcut."
 EOF
 chmod 755 "$PKG/DEBIAN/postinst"
 
@@ -101,6 +113,8 @@ chmod 755 "$PKG/DEBIAN/postinst"
 cat > "$PKG/DEBIAN/prerm" << 'EOF'
 #!/bin/bash
 pkill -x linuxzones 2>/dev/null || true
+systemctl --user stop linuxzones.service 2>/dev/null || true
+systemctl --user disable linuxzones.service 2>/dev/null || true
 exit 0
 EOF
 chmod 755 "$PKG/DEBIAN/prerm"

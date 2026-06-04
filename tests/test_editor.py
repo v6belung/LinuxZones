@@ -14,7 +14,7 @@ import pytest
 tk = pytest.importorskip("tkinter")
 from tkinter import TclError
 
-from zones import Layout, Zone
+from linuxzones.zones import Layout, Zone, ZonesConfig
 
 
 @pytest.fixture(scope="session")
@@ -36,7 +36,7 @@ def tk_root():
 
 @pytest.fixture
 def make_editor(tk_root):
-    from editor import ZoneEditor
+    from linuxzones.editor import ZoneEditor
 
     created = []
 
@@ -103,26 +103,24 @@ def test_invalid_initial_modifier_key_defaults_to_shift(make_editor):
 
 # --------------------------------------------------------------- save result shape
 
-def test_save_returns_five_tuple_with_canonical_modifier(make_editor):
+def test_save_returns_zonesconfig_with_canonical_modifier(make_editor):
     ed = make_editor(modifier_snap=False)
     ed.mod_snap_var.set(True)
     ed.mod_key_var.set("Ctrl")
     ed._save()
-    assert ed.result is not None
-    layouts, active, opacity, mod_snap, mod_key = ed.result
-    assert active == "halves"
-    assert mod_snap is True
-    assert mod_key == "ctrl"                    # label mapped back to canonical
-    assert 0.0 < opacity <= 1.0
+    assert isinstance(ed.result, ZonesConfig)
+    assert ed.result.active == "halves"
+    assert ed.result.mod_snap is True
+    assert ed.result.mod_key == "ctrl"         # label mapped back to canonical
+    assert 0.0 < ed.result.opacity <= 1.0
 
 
 def test_save_disabled_modifier(make_editor):
     ed = make_editor(modifier_snap=True, modifier_key="alt")
     ed.mod_snap_var.set(False)
     ed._save()
-    _, _, _, mod_snap, mod_key = ed.result
-    assert mod_snap is False
-    assert mod_key == "alt"                     # remembered even while disabled
+    assert ed.result.mod_snap is False
+    assert ed.result.mod_key == "alt"          # remembered even while disabled
 
 
 # --------------------------------------------------------------- core: zones / layouts
@@ -178,7 +176,7 @@ def test_delete_selected_zone(make_editor):
 
 
 def test_rename_zone_uses_dialog_value(make_editor, monkeypatch):
-    import editor as editor_mod
+    import linuxzones.editor as editor_mod
     ed = make_editor()
     ed._selected = 0
     monkeypatch.setattr(editor_mod.simpledialog, "askstring",
@@ -188,7 +186,7 @@ def test_rename_zone_uses_dialog_value(make_editor, monkeypatch):
 
 
 def test_new_layout_uses_dialog_value(make_editor, monkeypatch):
-    import editor as editor_mod
+    import linuxzones.editor as editor_mod
     ed = make_editor()
     monkeypatch.setattr(editor_mod.simpledialog, "askstring",
                         lambda *a, **k: "fresh")
@@ -204,6 +202,5 @@ def test_save_preserves_layouts_and_active(make_editor):
     }
     ed = make_editor(layouts=layouts, active="b")
     ed._save()
-    out_layouts, active, *_ = ed.result
-    assert active == "b"
-    assert set(out_layouts.keys()) == {"a", "b"}
+    assert ed.result.active == "b"
+    assert set(ed.result.layouts.keys()) == {"a", "b"}

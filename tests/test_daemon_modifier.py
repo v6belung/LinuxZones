@@ -8,7 +8,7 @@ modifier-triggered overlay-and-snap path, which mirrors the right-click path.
 import Xlib.X as X
 from Xlib import XK
 
-from daemon import _State, _MODIFIER_KEYSYMS
+from linuxzones.daemon import _State, _MODIFIER_KEYSYMS
 from conftest import make_event, drain
 
 

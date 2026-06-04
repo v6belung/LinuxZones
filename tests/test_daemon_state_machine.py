@@ -8,7 +8,7 @@ snapping silently failed.
 
 import Xlib.X as X
 
-from daemon import _State, DRAG_THRESHOLD
+from linuxzones.daemon import _State, DRAG_THRESHOLD
 from conftest import make_event, drain
 
 

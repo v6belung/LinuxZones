@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 # LinuxZones installer — run once after cloning / after an update
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# $SCRIPT_DIR is interpolated into the /usr/local/bin/linuxzones launcher and
-# several .desktop Exec= lines below.  If the checkout path contains shell
-# metacharacters they would be re-evaluated when the launcher runs (command
-# injection) or break the generated files.  Refuse to proceed in that case
-# rather than emit a booby-trapped launcher.
+# Refuse to continue if the checkout path contains shell metacharacters that
+# would be re-evaluated when the generated .desktop Exec= lines are parsed.
 case "$SCRIPT_DIR" in
     *'`'*|*'$'*|*'"'*|*'\'*|*"'"*)
         echo "ERROR: LinuxZones path contains unsafe characters:" >&2
         echo "         $SCRIPT_DIR" >&2
-        echo "       Move the project to a path without \$ \` \" ' or backslash and re-run." >&2
+        echo "       Move the project to a safe path and re-run." >&2
         exit 1
         ;;
 esac
 
+VERSION="$(python3 -c "import re; print(re.search(r\"__version__ = [\\\"'](.*?)[\\\"']\", open('$SCRIPT_DIR/linuxzones/__init__.py').read()).group(1))")"
+
+echo "=== LinuxZones $VERSION ==="
+echo ""
+
+LZ_BIN="$HOME/.local/bin/linuxzones"
+SERVICE_DIR="$HOME/.config/systemd/user"
 APP_DESKTOP="$HOME/.local/share/applications/linuxzones.desktop"
 DESK_SHORTCUT="$HOME/Desktop/LinuxZones.desktop"
 AUTOSTART="$HOME/.config/autostart/linuxzones.desktop"
@@ -51,6 +55,12 @@ else
     echo "         wmctrl manually, then re-run."
 fi
 
+# ------------------------------------------------------------------ install Python package
+
+echo "==> Installing LinuxZones..."
+pip install --user --break-system-packages -q "$SCRIPT_DIR"
+echo "  → $LZ_BIN"
+
 # ------------------------------------------------------------------ icon
 
 echo "==> Generating icon..."
@@ -66,7 +76,6 @@ try:
         d.rounded_rectangle([0, 0, S-1, S-1], radius=18, fill="#1e2a3a")
     except AttributeError:                       # Pillow < 8.2
         d.rectangle([0, 0, S-1, S-1], fill="#1e2a3a")
-    # Three zones: 8 | 16 | 8  (25% | 50% | 25%)
     d.rectangle([ 8, 14,  30, S-14], fill="#4a90d9")   # left
     d.rectangle([34, 14, S-34, S-14], fill="#dce8ff")  # centre
     d.rectangle([S-30, 14, S-8, S-14], fill="#4a90d9") # right
@@ -76,31 +85,16 @@ except ImportError:
     print("  python3-pil not available — will use system icon instead")
 PYEOF
 
-# Install the icon into the user's hicolor icon theme so system monitors and
-# app launchers can find it by name ("linuxzones") rather than by absolute path.
-# Absolute-path Icon= fields are ignored by many system monitors; theme names work.
 echo "==> Installing icon to user icon theme..."
 HICOLOR_DIR="$HOME/.local/share/icons/hicolor"
 mkdir -p "$HICOLOR_DIR/128x128/apps"
 if [ -f "$SCRIPT_DIR/icon.png" ]; then
     cp "$SCRIPT_DIR/icon.png" "$HICOLOR_DIR/128x128/apps/linuxzones.png"
-    # gtk-update-icon-cache refreshes the theme index so the new icon is found
     gtk-update-icon-cache "$HICOLOR_DIR" --ignore-theme-index -q 2>/dev/null || true
     echo "  Icon installed as 'linuxzones' in hicolor theme."
 fi
 
-# ------------------------------------------------------------------ /usr/local/bin launcher
-# 'exec -a linuxzones' sets argv[0] so tools like 'ps' show 'linuxzones'.
-# prctl inside the Python script sets /proc/PID/comm for system monitors.
-
-echo "==> Creating 'linuxzones' command..."
-sudo tee /usr/local/bin/linuxzones > /dev/null <<EOF
-#!/usr/bin/env bash
-exec -a linuxzones python3 "$SCRIPT_DIR/linuxzones.py" "\$@"
-EOF
-sudo chmod +x /usr/local/bin/linuxzones
-
-# ------------------------------------------------------------------ .desktop content (shared)
+# ------------------------------------------------------------------ .desktop helper
 
 make_desktop_content() {
     local exec_line="$1"
@@ -123,25 +117,50 @@ EOF
 
 echo "==> Creating application menu entry..."
 mkdir -p "$(dirname "$APP_DESKTOP")"
-make_desktop_content "linuxzones" > "$APP_DESKTOP"
+make_desktop_content "$LZ_BIN" > "$APP_DESKTOP"
 
 # ------------------------------------------------------------------ desktop shortcut
 
 echo "==> Creating desktop shortcut..."
 mkdir -p "$HOME/Desktop"
-make_desktop_content "linuxzones" > "$DESK_SHORTCUT"
+make_desktop_content "$LZ_BIN" > "$DESK_SHORTCUT"
 chmod +x "$DESK_SHORTCUT"
 
-# Mark as trusted so Cinnamon launches it directly without the "Allow?" dialog
 gio set "$DESK_SHORTCUT" metadata::trusted true 2>/dev/null \
     || xattr -w com.apple.metadata 'trusted' "$DESK_SHORTCUT" 2>/dev/null \
     || true   # silently ignore if neither tool is available
 
-# ------------------------------------------------------------------ autostart
+# ------------------------------------------------------------------ systemd user service (preferred) or autostart .desktop (fallback)
 
-echo "==> Enabling autostart on login..."
-mkdir -p "$(dirname "$AUTOSTART")"
-make_desktop_content "linuxzones" > "$AUTOSTART"
+echo "==> Setting up autostart..."
+mkdir -p "$SERVICE_DIR"
+cp "$SCRIPT_DIR/linuxzones.service" "$SERVICE_DIR/linuxzones.service"
+
+if systemctl --user daemon-reload 2>/dev/null && \
+   systemctl --user enable linuxzones.service 2>/dev/null; then
+    echo "  → systemd service enabled (starts automatically at next login)"
+    echo "     Manage it with: systemctl --user {start|stop|restart|status} linuxzones"
+    # Remove the old .desktop autostart — the service takes over.
+    # Having both would open the editor on every login (second invocation sends SIGUSR1).
+    rm -f "$AUTOSTART"
+else
+    echo "  → systemd user session unavailable; using .desktop autostart as fallback"
+    mkdir -p "$(dirname "$AUTOSTART")"
+    make_desktop_content "$LZ_BIN" > "$AUTOSTART"
+fi
+
+# ------------------------------------------------------------------ start now (no re-login required)
+
+echo "==> Starting LinuxZones..."
+setsid "$LZ_BIN" > /dev/null 2>&1 &
+disown
+sleep 0.6
+if pgrep -x linuxzones > /dev/null 2>&1; then
+    echo "  → running (PID $(pgrep -x linuxzones | head -1))"
+else
+    echo "  → not running yet; will start automatically at next login"
+    echo "     Or run manually: $LZ_BIN"
+fi
 
 # ------------------------------------------------------------------ done
 
@@ -150,19 +169,16 @@ echo "======================================================"
 echo " LinuxZones installed successfully!"
 echo "======================================================"
 echo ""
-echo " Double-click 'LinuxZones' on your desktop to start."
-echo " LinuxZones runs silently in the background."
-echo " It will also start automatically on next login."
+echo " Double-click 'LinuxZones' on your desktop to open"
+echo " the layout editor (while running) or start it."
 echo ""
-echo " Double-click the icon again while running to open"
-echo " the layout editor."
-echo ""
-echo " Command-line usage (optional):"
-echo "   linuxzones              start (same as double-click)"
-echo "   linuxzones editor       open layout editor standalone"
-echo "   linuxzones list         list saved layouts"
-echo "   pkill linuxzones        stop the running instance"
-echo ""
-echo " Logs (when launched from desktop):"
+echo " Logs (desktop / service launches):"
 echo "   ~/.local/share/linuxzones/linuxzones.log"
+echo "   journalctl --user -u linuxzones -f"
+echo ""
+echo " Command-line:"
+echo "   linuxzones               start"
+echo "   linuxzones editor        open layout editor"
+echo "   linuxzones list          list saved layouts"
+echo "   pkill linuxzones         stop"
 echo "======================================================"

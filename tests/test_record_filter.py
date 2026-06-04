@@ -18,7 +18,7 @@ import Xlib.X as X
 import Xlib.ext.record as record
 import Xlib.protocol.rq as rq
 
-from daemon import _State
+from linuxzones.daemon import _State
 
 
 # Core X event type numbers (first byte of each RECORD event record).

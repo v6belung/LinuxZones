@@ -8,18 +8,14 @@ only the attributes those code paths touch, so the *actual production methods*
 (`_handle`, `_record_callback`) are exercised without an X server.
 """
 
-import os
 import queue
 import sys
 from types import SimpleNamespace
 
 import pytest
 
-# Make the project modules importable when pytest is run from anywhere.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from daemon import ZoneDaemon, _State          # noqa: E402
-from zones import Layout, Zone                  # noqa: E402
+from linuxzones.daemon import ZoneDaemon, _State
+from linuxzones.zones import Layout, Zone
 
 
 @pytest.fixture

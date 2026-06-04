@@ -2,15 +2,13 @@
 """LinuxZones — FancyZones-like window snapping for Linux (X11).
 
 Usage:
-  python3 linuxzones.py          # start in background (default)
-  python3 linuxzones.py run      # same as above
-  python3 linuxzones.py run --layout thirds
-  python3 linuxzones.py editor   # open zone layout editor standalone
-  python3 linuxzones.py list     # list available layouts
-  python3 linuxzones.py --version
+  linuxzones                       # start in background (default)
+  linuxzones run                   # same as above
+  linuxzones run --layout thirds
+  linuxzones editor                # open zone layout editor standalone
+  linuxzones list                  # list available layouts
+  linuxzones --version
 """
-
-__version__ = "0.1.11"
 
 import argparse
 import os
@@ -19,6 +17,8 @@ import signal
 import sys
 import threading
 import tkinter as tk
+
+from . import __version__
 
 
 # ------------------------------------------------------------------ helpers
@@ -92,10 +92,15 @@ class LinuxZonesApp:
     def __init__(self, layout_override: str | None = None):
         _check_x11()
 
-        from zones import load_config, save_config
+        from .zones import load_config, save_config
         self._save_config = save_config
 
-        self.layouts, self.active, self.opacity, self.mod_snap, self.mod_key = load_config()
+        cfg = load_config()
+        self.layouts  = cfg.layouts
+        self.active   = cfg.active
+        self.opacity  = cfg.opacity
+        self.mod_snap = cfg.mod_snap
+        self.mod_key  = cfg.mod_key
 
         if layout_override:
             if layout_override not in self.layouts:
@@ -116,7 +121,7 @@ class LinuxZonesApp:
         self.root.title("LinuxZones")
 
         # Overlay as a Toplevel child of root
-        from overlay import ZoneOverlay
+        from .overlay import ZoneOverlay
         layout = self.layouts[self.active]
         self.overlay = ZoneOverlay(
             self.root, layout.zones,
@@ -129,7 +134,7 @@ class LinuxZonesApp:
         )
 
         # X11 event daemon (background thread)
-        from daemon import ZoneDaemon
+        from .daemon import ZoneDaemon
         self.daemon = ZoneDaemon(layout, self.ui_queue,
                                  mod_snap=self.mod_snap, mod_key=self.mod_key)
         threading.Thread(
@@ -186,8 +191,8 @@ class LinuxZonesApp:
     # ------------------------------------------------------------------ editor
 
     def _open_editor(self):
-        from zones import save_config
-        from editor import ZoneEditor
+        from .zones import save_config
+        from .editor import ZoneEditor
 
         # Hide overlay while the editor is open so it doesn't cover the canvas
         self.overlay.hide()
@@ -203,24 +208,23 @@ class LinuxZonesApp:
         result = editor.run()           # blocks via wait_window()
 
         if result:
-            new_layouts, new_active, new_opacity, new_mod_snap, new_mod_key = result
-            self.layouts  = new_layouts
-            self.active   = new_active
-            self.opacity  = new_opacity
-            self.mod_snap = new_mod_snap
-            self.mod_key  = new_mod_key
-            save_config(new_layouts, new_active, new_opacity, new_mod_snap, new_mod_key)
+            self.layouts  = result.layouts
+            self.active   = result.active
+            self.opacity  = result.opacity
+            self.mod_snap = result.mod_snap
+            self.mod_key  = result.mod_key
+            save_config(result)
 
-            new_layout = new_layouts[new_active]
+            new_layout = result.layouts[result.active]
             self.overlay.update_zones(new_layout.zones)
-            self.overlay.set_opacity(new_opacity)
+            self.overlay.set_opacity(result.opacity)
             self.daemon.update_layout(new_layout)
-            self.daemon.update_mod_snap(new_mod_snap, new_mod_key)
+            self.daemon.update_mod_snap(result.mod_snap, result.mod_key)
 
             print(
-                f"[linuxzones] Saved: layout='{new_active}', "
-                f"opacity={new_opacity:.0%}, "
-                f"modifier-snap={'on (' + new_mod_key + ')' if new_mod_snap else 'off'}"
+                f"[linuxzones] Saved: layout='{result.active}', "
+                f"opacity={result.opacity:.0%}, "
+                f"modifier-snap={'on (' + result.mod_key + ')' if result.mod_snap else 'off'}"
             )
 
     # ------------------------------------------------------------------ quit
@@ -334,37 +338,36 @@ def cmd_run(layout_name: str | None):
 def cmd_editor():
     _check_x11()
 
-    from zones import load_config, save_config
-    from editor import ZoneEditor
+    from .zones import load_config, save_config
+    from .editor import ZoneEditor
 
-    layouts, active, opacity, mod_snap, mod_key = load_config()
+    cfg = load_config()
     screen_w, screen_h = _get_screen_size()
 
-    editor = ZoneEditor(layouts, active, screen_w, screen_h,
-                        opacity=opacity, modifier_snap=mod_snap, modifier_key=mod_key)
+    editor = ZoneEditor(cfg.layouts, cfg.active, screen_w, screen_h,
+                        opacity=cfg.opacity, modifier_snap=cfg.mod_snap, modifier_key=cfg.mod_key)
     result = editor.run()
     if result:
-        new_layouts, new_active, new_opacity, new_mod_snap, new_mod_key = result
-        save_config(new_layouts, new_active, new_opacity, new_mod_snap, new_mod_key)
+        save_config(result)
         print(
-            f"[linuxzones] Saved: layout='{new_active}', "
-            f"opacity={new_opacity:.0%}, "
-            f"modifier-snap={'on (' + new_mod_key + ')' if new_mod_snap else 'off'}"
+            f"[linuxzones] Saved: layout='{result.active}', "
+            f"opacity={result.opacity:.0%}, "
+            f"modifier-snap={'on (' + result.mod_key + ')' if result.mod_snap else 'off'}"
         )
     else:
         print("[linuxzones] Editor closed without saving.")
 
 
 def cmd_list():
-    from zones import load_config
-    layouts, active, opacity, mod_snap, mod_key = load_config()
-    mod_state = f"on ({mod_key})" if mod_snap else "off"
+    from .zones import load_config
+    cfg = load_config()
+    mod_state = f"on ({cfg.mod_key})" if cfg.mod_snap else "off"
     print(
         f"LinuxZones v{__version__} — layouts (* = active)  "
-        f"opacity: {opacity:.0%}  modifier-snap: {mod_state}"
+        f"opacity: {cfg.opacity:.0%}  modifier-snap: {mod_state}"
     )
-    for name, layout in layouts.items():
-        marker     = " *" if name == active else "  "
+    for name, layout in cfg.layouts.items():
+        marker     = " *" if name == cfg.active else "  "
         zones_desc = f"{len(layout.zones)} zone{'s' if len(layout.zones) != 1 else ''}"
         print(f"{marker} {name:<24} {zones_desc}")
 

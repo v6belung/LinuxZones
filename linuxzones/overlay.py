@@ -1,7 +1,7 @@
 import tkinter as tk
 from typing import List, Optional, Tuple, Union
 
-from zones import Zone
+from .zones import Zone
 
 ZONE_COLORS = ["#4a90d9", "#7b68ee", "#48c774", "#ff9f43", "#ff6b35", "#e84393"]
 ACTIVE_COLOR = "#ffffff"

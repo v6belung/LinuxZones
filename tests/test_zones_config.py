@@ -5,8 +5,8 @@ import math
 
 import pytest
 
-import zones
-from zones import Zone, Layout, _sanitize_zones, load_config, save_config
+import linuxzones.zones as zones
+from linuxzones.zones import Zone, Layout, ZonesConfig, _sanitize_zones, load_config, save_config
 
 
 # --------------------------------------------------------------- _sanitize_zones
@@ -80,19 +80,19 @@ def test_load_config_sanitises_hand_edited_file(tmp_path, monkeypatch):
         },
     }))
 
-    layouts, active, opacity, mod_snap, mod_key = load_config()
+    cfg = load_config()
     # The Infinity zone is dropped; the valid one survives.
-    assert [z.name for z in layouts["mine"].zones] == ["ok"]
-    assert active == "mine"
+    assert [z.name for z in cfg.layouts["mine"].zones] == ["ok"]
+    assert cfg.active == "mine"
 
 
 def test_load_config_missing_file_returns_defaults(tmp_path, monkeypatch):
     monkeypatch.setattr(zones, "CONFIG_FILE", str(tmp_path / "nope.json"))
-    layouts, active, opacity, mod_snap, mod_key = load_config()
-    assert active == "ultrawide-8-16-8"
-    assert opacity == 0.5
-    assert mod_snap is False
-    assert mod_key == "shift"
+    cfg = load_config()
+    assert cfg.active == "ultrawide-8-16-8"
+    assert cfg.opacity == 0.5
+    assert cfg.mod_snap is False
+    assert cfg.mod_key == "shift"
 
 
 # --------------------------------------------------------------- save_config (atomic)
@@ -107,15 +107,15 @@ def test_save_then_load_round_trip(tmp_path, monkeypatch):
         Zone(0.0, 0.0, 0.5, 1.0, "left"),
         Zone(0.5, 0.0, 0.5, 1.0, "right"),
     ])}
-    save_config(layouts, "halves", opacity=0.7, modifier_snap=True, modifier_key="alt")
+    save_config(ZonesConfig(layouts, "halves", opacity=0.7, mod_snap=True, mod_key="alt"))
 
     assert cfg_file.exists()
-    layouts2, active, opacity, mod_snap, mod_key = load_config()
-    assert active == "halves"
-    assert opacity == pytest.approx(0.7)
-    assert mod_snap is True
-    assert mod_key == "alt"
-    assert [z.name for z in layouts2["halves"].zones] == ["left", "right"]
+    cfg2 = load_config()
+    assert cfg2.active == "halves"
+    assert cfg2.opacity == pytest.approx(0.7)
+    assert cfg2.mod_snap is True
+    assert cfg2.mod_key == "alt"
+    assert [z.name for z in cfg2.layouts["halves"].zones] == ["left", "right"]
 
 
 def test_save_leaves_no_temp_files_behind(tmp_path, monkeypatch):
@@ -124,7 +124,7 @@ def test_save_leaves_no_temp_files_behind(tmp_path, monkeypatch):
     monkeypatch.setattr(zones, "CONFIG_DIR", str(cfg_dir))
     monkeypatch.setattr(zones, "CONFIG_FILE", str(cfg_file))
 
-    save_config({"halves": Layout("halves", [])}, "halves")
+    save_config(ZonesConfig({"halves": Layout("halves", [])}, "halves"))
 
     leftovers = [p.name for p in cfg_dir.iterdir() if p.name != "config.json"]
     assert leftovers == []
@@ -146,7 +146,7 @@ def _write_cfg(tmp_path, monkeypatch, data):
 
 
 def test_coerce_modifier_accepts_valid_and_rejects_garbage():
-    from zones import _coerce_modifier
+    from linuxzones.zones import _coerce_modifier
     assert _coerce_modifier("alt") == "alt"
     assert _coerce_modifier("CTRL") == "ctrl"        # case-insensitive
     assert _coerce_modifier("super") == "shift"      # unknown → default
@@ -157,32 +157,32 @@ def test_coerce_modifier_accepts_valid_and_rejects_garbage():
 def test_legacy_shift_snap_true_maps_to_modifier_shift(tmp_path, monkeypatch):
     """Old configs only had a boolean shift_snap; honour it as modifier=shift."""
     _write_cfg(tmp_path, monkeypatch, {"shift_snap": True})
-    _, _, _, mod_snap, mod_key = load_config()
-    assert mod_snap is True
-    assert mod_key == "shift"
+    cfg = load_config()
+    assert cfg.mod_snap is True
+    assert cfg.mod_key == "shift"
 
 
 def test_legacy_shift_snap_false_maps_to_disabled(tmp_path, monkeypatch):
     _write_cfg(tmp_path, monkeypatch, {"shift_snap": False})
-    _, _, _, mod_snap, mod_key = load_config()
-    assert mod_snap is False
-    assert mod_key == "shift"
+    cfg = load_config()
+    assert cfg.mod_snap is False
+    assert cfg.mod_key == "shift"
 
 
 def test_new_keys_take_precedence_over_legacy(tmp_path, monkeypatch):
     _write_cfg(tmp_path, monkeypatch,
                {"shift_snap": True, "modifier_snap": True, "modifier_key": "ctrl"})
-    _, _, _, mod_snap, mod_key = load_config()
-    assert mod_snap is True
-    assert mod_key == "ctrl"
+    cfg = load_config()
+    assert cfg.mod_snap is True
+    assert cfg.mod_key == "ctrl"
 
 
 def test_invalid_modifier_key_in_file_falls_back_to_shift(tmp_path, monkeypatch):
     _write_cfg(tmp_path, monkeypatch,
                {"modifier_snap": True, "modifier_key": "hyper"})
-    _, _, _, mod_snap, mod_key = load_config()
-    assert mod_snap is True
-    assert mod_key == "shift"
+    cfg = load_config()
+    assert cfg.mod_snap is True
+    assert cfg.mod_key == "shift"
 
 
 def test_save_writes_legacy_shift_only_for_shift_modifier(tmp_path, monkeypatch):
@@ -192,14 +192,14 @@ def test_save_writes_legacy_shift_only_for_shift_modifier(tmp_path, monkeypatch)
     monkeypatch.setattr(zones, "CONFIG_DIR", str(cfg_dir))
     monkeypatch.setattr(zones, "CONFIG_FILE", str(cfg_file))
 
-    save_config({"halves": Layout("halves", [])}, "halves",
-                modifier_snap=True, modifier_key="alt")
+    save_config(ZonesConfig({"halves": Layout("halves", [])}, "halves",
+                             mod_snap=True, mod_key="alt"))
     written = json.loads(cfg_file.read_text())
     assert written["modifier_snap"] is True
     assert written["modifier_key"] == "alt"
     assert written["shift_snap"] is False     # an old binary won't snap on Shift
 
-    save_config({"halves": Layout("halves", [])}, "halves",
-                modifier_snap=True, modifier_key="shift")
+    save_config(ZonesConfig({"halves": Layout("halves", [])}, "halves",
+                             mod_snap=True, mod_key="shift"))
     written = json.loads(cfg_file.read_text())
     assert written["shift_snap"] is True      # old binary still gets Shift snap

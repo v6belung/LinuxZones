@@ -8,8 +8,8 @@ zone boundary.  The conftest daemon fixture uses a 1000×1000 work area so
 import pytest
 import Xlib.X as X
 
-from zones import Layout, Zone, MARGIN_PX
-from daemon import _State
+from linuxzones.zones import Layout, Zone, MARGIN_PX
+from linuxzones.daemon import _State
 from conftest import make_event, drain
 
 SCREEN = 1000  # matches the make_daemon fixture's screen_w / screen_h default

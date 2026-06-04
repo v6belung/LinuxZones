@@ -4,8 +4,7 @@ Uses ttk widgets throughout so the dialog inherits the desktop's native theme.
 The only non-system colours are inside the zone-preview canvas (dark background
 and brightly coloured zone rectangles — purely visual, not UI chrome).
 
-run() returns (layouts, active_layout, opacity, modifier_snap, modifier_key)
-on save, or None on cancel.
+run() returns a ZonesConfig on save, or None on cancel.
 """
 
 import copy
@@ -13,7 +12,7 @@ import tkinter as tk
 from tkinter import ttk, simpledialog, messagebox
 from typing import Dict, List, Optional, Tuple
 
-from zones import Zone, Layout, DEFAULT_LAYOUTS, VALID_MODIFIERS, _coerce_modifier
+from .zones import Zone, Layout, ZonesConfig, DEFAULT_LAYOUTS, VALID_MODIFIERS, _coerce_modifier
 
 GRID = 0.05   # snap-to-grid step (5 % of screen)
 
@@ -42,8 +41,7 @@ class ZoneEditor:
     master         : parent tk.Tk for embedded Toplevel mode;
                      None = standalone (creates its own Tk root)
 
-    run() returns (layouts, active_layout, opacity, modifier_snap, modifier_key)
-    on save, or None on cancel.
+    run() returns a ZonesConfig on save, or None on cancel.
     """
 
     def __init__(
@@ -61,7 +59,7 @@ class ZoneEditor:
         self.active_layout = active_layout
         self.screen_w      = screen_w
         self.screen_h      = screen_h
-        self.result        = None
+        self.result: Optional[ZonesConfig] = None
 
         # Scale preview canvas to ≤800 px wide, preserving aspect ratio
         self.pw = 800
@@ -92,7 +90,7 @@ class ZoneEditor:
         self._update_info()
         self._redraw()
 
-    # ── UI construction ───────────────────────────────────────────────────────
+    # ── UI construction ───────────────────────────────────────────────────────────
 
     def _build(self) -> None:
         # Main frame splits into sidebar (left) + canvas area (right)
@@ -543,20 +541,19 @@ class ZoneEditor:
     # ── Save / run ────────────────────────────────────────────────────────────
 
     def _save(self) -> None:
-        self.result = (
-            self.layouts,
-            self.active_layout,
-            self.opacity_var.get() / 100,
-            self.mod_snap_var.get(),
-            _LABEL_TO_MOD.get(self.mod_key_var.get(), "shift"),
+        self.result = ZonesConfig(
+            layouts  = self.layouts,
+            active   = self.active_layout,
+            opacity  = self.opacity_var.get() / 100,
+            mod_snap = self.mod_snap_var.get(),
+            mod_key  = _LABEL_TO_MOD.get(self.mod_key_var.get(), "shift"),
         )
         self.root.destroy()
 
-    def run(self):
+    def run(self) -> Optional[ZonesConfig]:
         """Block until the editor closes.
 
-        Returns (layouts, active_layout, opacity, modifier_snap, modifier_key)
-        on save, or None if cancelled.
+        Returns a ZonesConfig on save, or None if cancelled.
         """
         if self._toplevel:
             self.root.wait_window()   # embedded: yields to parent mainloop
