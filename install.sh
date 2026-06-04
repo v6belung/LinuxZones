@@ -130,24 +130,21 @@ gio set "$DESK_SHORTCUT" metadata::trusted true 2>/dev/null \
     || xattr -w com.apple.metadata 'trusted' "$DESK_SHORTCUT" 2>/dev/null \
     || true   # silently ignore if neither tool is available
 
-# ------------------------------------------------------------------ systemd user service (preferred) or autostart .desktop (fallback)
+# ------------------------------------------------------------------ autostart .desktop
 
 echo "==> Setting up autostart..."
-mkdir -p "$SERVICE_DIR"
-cp "$SCRIPT_DIR/linuxzones.service" "$SERVICE_DIR/linuxzones.service"
-
-if systemctl --user daemon-reload 2>/dev/null && \
-   systemctl --user enable linuxzones.service 2>/dev/null; then
-    echo "  → systemd service enabled (starts automatically at next login)"
-    echo "     Manage it with: systemctl --user {start|stop|restart|status} linuxzones"
-    # Remove the old .desktop autostart — the service takes over.
-    # Having both would open the editor on every login (second invocation sends SIGUSR1).
-    rm -f "$AUTOSTART"
-else
-    echo "  → systemd user session unavailable; using .desktop autostart as fallback"
-    mkdir -p "$(dirname "$AUTOSTART")"
-    make_desktop_content "$LZ_BIN" > "$AUTOSTART"
+# Remove any previously-installed systemd service — it relied on
+# graphical-session.target which most DEs never activate, so it silently
+# stayed inactive.  The XDG autostart .desktop is universally reliable.
+if systemctl --user is-enabled linuxzones.service &>/dev/null; then
+    systemctl --user disable linuxzones.service 2>/dev/null || true
+    echo "  → disabled old systemd service"
 fi
+rm -f "$SERVICE_DIR/linuxzones.service"
+
+mkdir -p "$(dirname "$AUTOSTART")"
+make_desktop_content "$LZ_BIN" > "$AUTOSTART"
+echo "  → $AUTOSTART"
 
 # ------------------------------------------------------------------ start now (no re-login required)
 
@@ -172,9 +169,8 @@ echo ""
 echo " Double-click 'LinuxZones' on your desktop to open"
 echo " the layout editor (while running) or start it."
 echo ""
-echo " Logs (desktop / service launches):"
+echo " Log file:"
 echo "   ~/.local/share/linuxzones/linuxzones.log"
-echo "   journalctl --user -u linuxzones -f"
 echo ""
 echo " Command-line:"
 echo "   linuxzones               start"
