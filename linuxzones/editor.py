@@ -14,7 +14,8 @@ from typing import Dict, List, Optional, Tuple
 
 from .zones import Zone, Layout, ZonesConfig, MonitorInfo, DEFAULT_LAYOUTS, VALID_MODIFIERS, _coerce_modifier
 
-GRID = 0.05   # snap-to-grid step (5 % of screen)
+GRID     = 0.05   # snap-to-grid step (5 % of screen)
+EDGE_TOL = 7      # pixels — hit zone for edge-resize detection
 
 # Canonical modifier name (as stored in config) ↔ human-friendly dropdown label.
 _MOD_LABELS = {m: m.capitalize() for m in VALID_MODIFIERS}   # "shift" → "Shift"
@@ -80,6 +81,10 @@ class ZoneEditor:
         self._selected:   Optional[int]             = None
         self._layout_names: List[str]               = []
 
+        self._resizing:     bool          = False
+        self._resize_zone:  Optional[int] = None
+        self._resize_edges: set           = set()
+
         if master is None:
             self.root      = tk.Tk()
             self._toplevel = False
@@ -103,158 +108,12 @@ class ZoneEditor:
     # ── UI construction ───────────────────────────────────────────────────────────
 
     def _build(self) -> None:
-        # Main frame splits into sidebar (left) + canvas area (right)
         main = ttk.Frame(self.root, padding=8)
         main.pack(fill="both", expand=True)
 
-        # ── Left sidebar ──────────────────────────────────────────────────
-        # Do NOT use pack_propagate(False) + fill="y" here.  Those two together
-        # clamp the sidebar to the window height (which is driven by the canvas),
-        # clipping the bottom sections on wide-aspect-ratio screens where the
-        # canvas is shorter than the sidebar's content.  Instead, let the sidebar
-        # report its natural height; the window will grow to the taller of
-        # sidebar vs canvas.
-        sidebar = ttk.Frame(main)
-        sidebar.pack(side="left", anchor="nw", padx=(0, 10))
-
-        # LAYOUTS ---------------------------------------------------------
-        lf_layouts = ttk.LabelFrame(sidebar, text="Layouts")
-        lf_layouts.pack(fill="x", pady=(0, 6))
-
-        lb_wrap = ttk.Frame(lf_layouts)
-        lb_wrap.pack(fill="x", padx=4, pady=(4, 0))
-
-        scrollbar = ttk.Scrollbar(lb_wrap, orient="vertical")
-        self.lb = tk.Listbox(
-            lb_wrap,
-            height=5,
-            yscrollcommand=scrollbar.set,
-            exportselection=False,
-            activestyle="none",
-        )
-        scrollbar.config(command=self.lb.yview)
-        scrollbar.pack(side="right", fill="y")
-        self.lb.pack(side="left", fill="both", expand=True)
-        self.lb.bind("<<ListboxSelect>>", self._on_layout_select)
-        self.lb.bind("<Double-Button-1>", lambda _: self._rename_layout())
-
-        r1 = ttk.Frame(lf_layouts)
-        r1.pack(fill="x", padx=4, pady=(4, 0))
-        ttk.Button(r1, text="New",    command=self._new_layout   ).pack(side="left", expand=True, fill="x", padx=(0, 2))
-        ttk.Button(r1, text="Rename", command=self._rename_layout).pack(side="left", expand=True, fill="x")
-
-        r2 = ttk.Frame(lf_layouts)
-        r2.pack(fill="x", padx=4, pady=(2, 4))
-        ttk.Button(r2, text="Duplicate", command=self._dup_layout   ).pack(side="left", expand=True, fill="x", padx=(0, 2))
-        ttk.Button(r2, text="Delete",    command=self._delete_layout).pack(side="left", expand=True, fill="x")
-
-        # PRESETS ---------------------------------------------------------
-        lf_presets = ttk.LabelFrame(sidebar, text="Presets")
-        lf_presets.pack(fill="x", pady=(0, 6))
-
-        for preset in DEFAULT_LAYOUTS:
-            ttk.Button(
-                lf_presets, text=preset,
-                command=lambda p=preset: self._apply_preset(p),
-            ).pack(fill="x", padx=4, pady=1)
-        ttk.Frame(lf_presets).pack(pady=2)   # bottom breathing room
-
-        # SELECTED ZONE ---------------------------------------------------
-        lf_zone = ttk.LabelFrame(sidebar, text="Selected Zone")
-        lf_zone.pack(fill="x", pady=(0, 6))
-
-        self.zone_var = tk.StringVar(value="Click a zone to select it")
-        ttk.Label(
-            lf_zone, textvariable=self.zone_var,
-            wraplength=220, justify="left",
-            font="TkFixedFont",
-        ).pack(fill="x", padx=6, pady=4)
-
-        zb = ttk.Frame(lf_zone)
-        zb.pack(fill="x", padx=4, pady=(0, 4))
-        ttk.Button(zb, text="Rename Zone", command=self._rename_zone).pack(side="left", expand=True, fill="x", padx=(0, 2))
-        ttk.Button(zb, text="Delete Zone", command=self._delete_zone).pack(side="left", expand=True, fill="x")
-
-        # SETTINGS --------------------------------------------------------
-        lf_settings = ttk.LabelFrame(sidebar, text="Settings")
-        lf_settings.pack(fill="x", pady=(0, 6))
-
-        ttk.Checkbutton(
-            lf_settings,
-            text="Keyboard modifier snap",
-            variable=self.mod_snap_var,
-            command=self._on_mod_toggle,
-        ).pack(anchor="w", padx=6, pady=(6, 2))
-        ttk.Label(
-            lf_settings,
-            text="Hold the chosen key while dragging to\nsnap (alternative to right-click)",
-            justify="left",
-        ).pack(anchor="w", padx=24, pady=(0, 2))
-
-        mod_row = ttk.Frame(lf_settings)
-        mod_row.pack(anchor="w", fill="x", padx=24, pady=(0, 2))
-        ttk.Label(mod_row, text="Modifier:").pack(side="left", padx=(0, 4))
-        self.mod_key_combo = ttk.Combobox(
-            mod_row,
-            textvariable=self.mod_key_var,
-            values=[_MOD_LABELS[m] for m in VALID_MODIFIERS],
-            state="readonly",
-            width=8,
-        )
-        self.mod_key_combo.pack(side="left")
-
-        ttk.Label(
-            lf_settings,
-            text="Privacy: enabling this makes LinuxZones\n"
-                 "monitor key presses globally so it can\n"
-                 "detect the modifier. Keystrokes are never\n"
-                 "stored or sent anywhere. Leave off to\n"
-                 "monitor mouse buttons only.",
-            justify="left",
-            foreground="#888888",
-        ).pack(anchor="w", padx=24, pady=(0, 6))
-
-        # Reflect the initial enabled/disabled state of the dropdown.
-        self._on_mod_toggle()
-
-        # OVERLAY OPACITY -------------------------------------------------
-        lf_opacity = ttk.LabelFrame(sidebar, text="Overlay Opacity")
-        lf_opacity.pack(fill="x")
-
-        op_row = ttk.Frame(lf_opacity)
-        op_row.pack(fill="x", padx=4, pady=4)
-
-        self._opacity_lbl = ttk.Label(
-            op_row, text=f"{self.opacity_var.get()}%", width=4, anchor="e",
-        )
-        self._opacity_lbl.pack(side="right")
-
-        ttk.Scale(
-            op_row,
-            from_=10, to=90,
-            orient="horizontal",
-            variable=self.opacity_var,
-            command=self._on_opacity,
-        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
-
-        ttk.Label(
-            lf_opacity,
-            text="how visible the zone overlay is during snapping",
-            justify="left",
-        ).pack(anchor="w", padx=6, pady=(0, 4))
-
-        # ── Right: canvas area ────────────────────────────────────────────
-        right = ttk.Frame(main)
-        right.pack(side="right", fill="both", expand=True)
-
-        ttk.Label(
-            right,
-            text="Draw: click-drag  ·  Select: left-click  ·  Delete: right-click",
-        ).pack(pady=(0, 4))
-
-        # Monitor selector (only shown when multiple monitors are detected)
+        # ── Monitor selector (above canvas, only when 2+ monitors) ───────
         if self._multi:
-            mon_row = ttk.Frame(right)
+            mon_row = ttk.Frame(main)
             mon_row.pack(fill="x", pady=(0, 6))
             ttk.Label(mon_row, text="Monitor:").pack(side="left", padx=(0, 6))
             _all_label = "All monitors (shared layout)"
@@ -272,8 +131,15 @@ class ZoneEditor:
             self._mon_combo.pack(side="left")
             self._mon_combo.bind("<<ComboboxSelected>>", self._on_monitor_select)
 
+        # ── Canvas ────────────────────────────────────────────────────────
+        ttk.Label(
+            main,
+            text="Draw: click-drag  ·  Select: left-click"
+                 "  ·  Delete: right-click  ·  Drag edge: resize",
+        ).pack(pady=(0, 4))
+
         self.canvas = tk.Canvas(
-            right, width=self.pw, height=self.ph,
+            main, width=self.pw, height=self.ph,
             bg=_CANVAS_BG,
             highlightthickness=1, highlightbackground="gray",
             cursor="crosshair",
@@ -283,14 +149,147 @@ class ZoneEditor:
         self.canvas.bind("<B1-Motion>",       self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
         self.canvas.bind("<ButtonPress-3>",   self._on_right_click)
+        self.canvas.bind("<Motion>",          self._on_motion)
 
-        # ── Bottom action bar ─────────────────────────────────────────────
+        # ── Three-column panel below canvas ───────────────────────────────
+        ttk.Separator(main, orient="horizontal").pack(fill="x", pady=(8, 0))
+        bottom = ttk.Frame(main)
+        bottom.pack(fill="both", expand=True, pady=(8, 0))
+
+        # COL 1 — Layouts ─────────────────────────────────────────────────
+        col1 = ttk.Frame(bottom)
+        col1.pack(side="left", fill="both", expand=True)
+
+        ttk.Label(col1, text="Layouts").pack(anchor="w")
+        ttk.Separator(col1, orient="horizontal").pack(fill="x", pady=(2, 4))
+
+        lb_wrap = ttk.Frame(col1)
+        lb_wrap.pack(fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(lb_wrap, orient="vertical")
+        self.lb = tk.Listbox(
+            lb_wrap, height=5,
+            yscrollcommand=scrollbar.set,
+            exportselection=False, activestyle="none",
+        )
+        scrollbar.config(command=self.lb.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.lb.pack(side="left", fill="both", expand=True)
+        self.lb.bind("<<ListboxSelect>>", self._on_layout_select)
+        self.lb.bind("<Double-Button-1>", lambda _: self._rename_layout())
+
+        r1 = ttk.Frame(col1)
+        r1.pack(fill="x", pady=(4, 0))
+        ttk.Button(r1, text="New",    command=self._new_layout   ).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        ttk.Button(r1, text="Rename", command=self._rename_layout).pack(side="left", expand=True, fill="x")
+
+        r2 = ttk.Frame(col1)
+        r2.pack(fill="x", pady=(2, 0))
+        ttk.Button(r2, text="Duplicate", command=self._dup_layout   ).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        ttk.Button(r2, text="Delete",    command=self._delete_layout).pack(side="left", expand=True, fill="x")
+
+        ttk.Separator(bottom, orient="vertical").pack(side="left", fill="y", padx=10)
+
+        # COL 2 — Selected Zone + Presets ─────────────────────────────────
+        col2 = ttk.Frame(bottom)
+        col2.pack(side="left", fill="both", expand=True)
+
+        ttk.Label(col2, text="Selected Zone").pack(anchor="w")
+        ttk.Separator(col2, orient="horizontal").pack(fill="x", pady=(2, 4))
+
+        self.zone_var = tk.StringVar(value="Click a zone to select it")
+        ttk.Label(
+            col2, textvariable=self.zone_var,
+            wraplength=200, justify="left",
+            font="TkFixedFont",
+        ).pack(anchor="w")
+
+        zb = ttk.Frame(col2)
+        zb.pack(fill="x", pady=(4, 0))
+        ttk.Button(zb, text="Rename Zone", command=self._rename_zone).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        ttk.Button(zb, text="Delete Zone", command=self._delete_zone).pack(side="left", expand=True, fill="x")
+
+        ttk.Separator(col2, orient="horizontal").pack(fill="x", pady=(8, 4))
+        ttk.Label(col2, text="Presets").pack(anchor="w")
+        ttk.Separator(col2, orient="horizontal").pack(fill="x", pady=(2, 4))
+
+        for preset in DEFAULT_LAYOUTS:
+            ttk.Button(
+                col2, text=preset,
+                command=lambda p=preset: self._apply_preset(p),
+            ).pack(fill="x", pady=1)
+
+        ttk.Separator(bottom, orient="vertical").pack(side="left", fill="y", padx=10)
+
+        # COL 3 — Settings ────────────────────────────────────────────────
+        col3 = ttk.Frame(bottom)
+        col3.pack(side="left", fill="both", expand=True)
+
+        ttk.Label(col3, text="Settings").pack(anchor="w")
+        ttk.Separator(col3, orient="horizontal").pack(fill="x", pady=(2, 6))
+
+        ttk.Checkbutton(
+            col3,
+            text="Keyboard modifier snap",
+            variable=self.mod_snap_var,
+            command=self._on_mod_toggle,
+        ).pack(anchor="w")
+        ttk.Label(
+            col3,
+            text="Hold the chosen key while dragging to\nsnap (alternative to right-click)",
+            justify="left",
+        ).pack(anchor="w", padx=(20, 0), pady=(0, 2))
+
+        mod_row = ttk.Frame(col3)
+        mod_row.pack(anchor="w", padx=(20, 0), pady=(0, 2))
+        ttk.Label(mod_row, text="Modifier:").pack(side="left", padx=(0, 4))
+        self.mod_key_combo = ttk.Combobox(
+            mod_row,
+            textvariable=self.mod_key_var,
+            values=[_MOD_LABELS[m] for m in VALID_MODIFIERS],
+            state="readonly",
+            width=8,
+        )
+        self.mod_key_combo.pack(side="left")
+
+        ttk.Label(
+            col3,
+            text="Privacy: enabling this makes LinuxZones\n"
+                 "monitor key presses globally so it can\n"
+                 "detect the modifier. Keystrokes are never\n"
+                 "stored or sent anywhere. Leave off to\n"
+                 "monitor mouse buttons only.",
+            justify="left",
+            foreground="#888888",
+        ).pack(anchor="w", padx=(20, 0), pady=(0, 6))
+
+        ttk.Separator(col3, orient="horizontal").pack(fill="x", pady=(0, 6))
+        ttk.Label(col3, text="Overlay Opacity").pack(anchor="w")
+
+        op_row = ttk.Frame(col3)
+        op_row.pack(fill="x", pady=(2, 0))
+        self._opacity_lbl = ttk.Label(
+            op_row, text=f"{self.opacity_var.get()}%", width=4, anchor="e",
+        )
+        self._opacity_lbl.pack(side="right")
+        ttk.Scale(
+            op_row,
+            from_=10, to=90, orient="horizontal",
+            variable=self.opacity_var,
+            command=self._on_opacity,
+        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+        ttk.Label(
+            col3,
+            text="how visible the zone overlay is during snapping",
+            justify="left",
+        ).pack(anchor="w", pady=(2, 0))
+
+        self._on_mod_toggle()
+
+        # ── Action bar ────────────────────────────────────────────────────
         ttk.Separator(self.root, orient="horizontal").pack(fill="x")
-
         bar = ttk.Frame(self.root, padding=(8, 6))
         bar.pack(fill="x")
-
-        # Save & Close on the right, Cancel to its left
         ttk.Button(bar, text="Save & Close", command=self._save       ).pack(side="right")
         ttk.Button(bar, text="Cancel",       command=self.root.destroy).pack(side="right", padx=(0, 4))
 
@@ -388,7 +387,70 @@ class ZoneEditor:
                 return i
         return None
 
+    def _edge_at_canvas(self, cx: int, cy: int) -> Optional[Tuple[int, set]]:
+        """Return (zone_idx, edge_set) when cx,cy is within EDGE_TOL px of a zone edge."""
+        for i, z in enumerate(self._layout.zones):
+            zx = int(z.x * self.pw)
+            zy = int(z.y * self.ph)
+            zw = int(z.w * self.pw)
+            zh = int(z.h * self.ph)
+            if not (zx - EDGE_TOL <= cx <= zx + zw + EDGE_TOL and
+                    zy - EDGE_TOL <= cy <= zy + zh + EDGE_TOL):
+                continue
+            edges: set = set()
+            if abs(cx - zx)        <= EDGE_TOL: edges.add("left")
+            if abs(cx - (zx + zw)) <= EDGE_TOL: edges.add("right")
+            if abs(cy - zy)        <= EDGE_TOL: edges.add("top")
+            if abs(cy - (zy + zh)) <= EDGE_TOL: edges.add("bottom")
+            if edges:
+                return i, edges
+        return None
+
+    def _cursor_for_edges(self, edges: set) -> str:
+        h = "left" in edges or "right" in edges
+        v = "top"  in edges or "bottom" in edges
+        if h and v:
+            tl = ("left" in edges) == ("top" in edges)   # TL or BR corner
+            return "top_left_corner" if tl else "top_right_corner"
+        return "sb_h_double_arrow" if h else "sb_v_double_arrow"
+
+    def _on_motion(self, e) -> None:
+        """Update cursor to a resize arrow when hovering over a zone edge."""
+        if self._drawing or self._resizing:
+            return
+        hit = self._edge_at_canvas(e.x, e.y)
+        self.canvas.config(
+            cursor=self._cursor_for_edges(hit[1]) if hit else "crosshair"
+        )
+
+    def _apply_resize(self, cx: int, cy: int) -> None:
+        z  = self._layout.zones[self._resize_zone]
+        fx = _snap_val(max(0.0, min(1.0, cx / self.pw)))
+        fy = _snap_val(max(0.0, min(1.0, cy / self.ph)))
+        if "left" in self._resize_edges:
+            old_right = z.x + z.w
+            z.x = max(0.0, min(fx, old_right - GRID))
+            z.w = old_right - z.x
+        if "right" in self._resize_edges:
+            z.w = max(GRID, min(fx - z.x, 1.0 - z.x))
+        if "top" in self._resize_edges:
+            old_bottom = z.y + z.h
+            z.y = max(0.0, min(fy, old_bottom - GRID))
+            z.h = old_bottom - z.y
+        if "bottom" in self._resize_edges:
+            z.h = max(GRID, min(fy - z.y, 1.0 - z.y))
+        self._update_info()
+        self._redraw()
+
     def _on_press(self, e) -> None:
+        # Edge resize takes priority over selection and drawing.
+        hit = self._edge_at_canvas(e.x, e.y)
+        if hit is not None:
+            self._resizing, self._resize_zone, self._resize_edges = True, hit[0], hit[1]
+            self._selected = hit[0]
+            self._update_info()
+            self._redraw()
+            return
         idx = self._zone_at_canvas(e.x, e.y)
         if idx is not None:
             self._selected = idx
@@ -402,6 +464,9 @@ class ZoneEditor:
             self._update_info()
 
     def _on_drag(self, e) -> None:
+        if self._resizing and self._resize_zone is not None:
+            self._apply_resize(e.x, e.y)
+            return
         if self._drawing and self._draw_start:
             self._redraw()
             x0, y0 = self._draw_start
@@ -412,6 +477,12 @@ class ZoneEditor:
             )
 
     def _on_release(self, e) -> None:
+        if self._resizing:
+            self._resizing = False
+            self._resize_zone = None
+            self._resize_edges = set()
+            self.canvas.config(cursor="crosshair")
+            return
         if not self._drawing or not self._draw_start:
             return
         self._drawing = False
