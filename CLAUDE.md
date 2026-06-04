@@ -54,6 +54,15 @@ via `object.__new__` and sets only the attributes the state-machine code
 touches. When adding daemon attributes, also add them to the `_factory`
 in `conftest.py` or tests will break with `AttributeError`.
 
+## Versioning
+
+The single source of truth for the version is `linuxzones/__init__.py` (`__version__`).
+`pyproject.toml` must always match it exactly. When bumping the version, update **both**
+files in the same commit. Never let them drift.
+
+To cut a release: bump both files, commit, then push a `v<version>` tag — the GitHub
+Actions release workflow triggers on that tag.
+
 ## Config
 `~/.config/linuxzones/config.json` — written atomically (temp file +
 fsync + `os.replace`). Includes `monitor_layouts` dict mapping RandR
