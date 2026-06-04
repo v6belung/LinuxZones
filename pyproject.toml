@@ -6,15 +6,19 @@ build-backend = "setuptools.build_meta"
 name = "linuxzones"
 version = "0.1.12"
 requires-python = ">=3.10"
-dependencies = []
-# Runtime deps are system packages, not pip:
-#   python3-xlib, python3-tk, python3-pil (Pillow), wmctrl
+dependencies = [
+    "python-xlib>=0.33",
+    "Pillow>=9.0",
+]
+# tkinter and wmctrl are NOT pip-installable and must come from the system:
+#   tkinter  → python3-tk (apt) / python3-tkinter (dnf) / tk (pacman)
+#   wmctrl   → wmctrl (all package managers)
 
 [project.scripts]
 linuxzones = "linuxzones.__main__:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "python-xlib>=0.33", "Pillow>=9.0"]
+dev = ["pytest>=7"]
 
 [tool.setuptools.packages.find]
 where = ["."]

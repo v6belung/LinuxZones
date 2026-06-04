@@ -20,6 +20,17 @@ VERSION="$(python3 -c "import re; print(re.search(r\"__version__ = [\\\"'](.*?)[
 echo "=== LinuxZones $VERSION ==="
 echo ""
 
+# ------------------------------------------------------------------ detect system type
+# /run/ostree-booted is set by the kernel on any ostree-based system
+# (Bazzite, Fedora Silverblue, Kinoite, Aurora, etc.)
+IMMUTABLE=false
+[ -f /run/ostree-booted ] && IMMUTABLE=true
+
+if [ "$IMMUTABLE" = true ]; then
+    echo "Detected: immutable / ostree system (Bazzite, Silverblue, Kinoite, etc.)"
+    echo ""
+fi
+
 LZ_BIN="$HOME/.local/bin/linuxzones"
 SERVICE_DIR="$HOME/.config/systemd/user"
 APP_DESKTOP="$HOME/.local/share/applications/linuxzones.desktop"
@@ -36,30 +47,79 @@ else
     echo "  Not running — nothing to stop."
 fi
 
-# ------------------------------------------------------------------ packages
+# ------------------------------------------------------------------ system packages
 
-echo "==> Installing system packages..."
-if command -v apt &>/dev/null; then
-    sudo apt install -y \
-        python3-pip python3-xlib python3-tk python3-pil wmctrl \
-        python3-gi gir1.2-gtk-3.0
-elif command -v dnf &>/dev/null; then
-    sudo dnf install -y python3-pip python3-xlib python3-tkinter \
-        python3-pillow wmctrl python3-gobject gtk3
-elif command -v pacman &>/dev/null; then
-    sudo pacman -S --noconfirm python-pip python-xlib tk python-pillow \
-        wmctrl python-gobject gtk3
+echo "==> Checking system packages..."
+
+if [ "$IMMUTABLE" = false ]; then
+    # Mutable system: install everything via the system package manager.
+    # python-xlib and Pillow will also be installed into the Python env by pip/pipx,
+    # but having them as system packages is harmless and keeps offline installs working.
+    if command -v apt &>/dev/null; then
+        sudo apt install -y \
+            python3-pip python3-xlib python3-tk python3-pil wmctrl \
+            python3-gi gir1.2-gtk-3.0
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y python3-pip python3-xlib python3-tkinter \
+            python3-pillow wmctrl python3-gobject gtk3
+    elif command -v pacman &>/dev/null; then
+        sudo pacman -S --noconfirm python-pip python-xlib tk python-pillow \
+            wmctrl python-gobject gtk3
+    else
+        echo "  WARNING: Unknown package manager."
+        echo "           Install python3-xlib, python3-tk, python3-pil, wmctrl manually."
+    fi
 else
-    echo "WARNING: Unknown package manager."
-    echo "         Install python3-pip, python3-xlib, python3-tk, python3-pil,"
-    echo "         wmctrl manually, then re-run."
+    # Immutable system: python-xlib and Pillow are pip-installable and will be
+    # pulled into the pipx virtualenv automatically from pyproject.toml dependencies.
+    # tkinter and wmctrl are NOT pip-installable — they need system-level access.
+    echo "  Skipping pip-installable packages (go into the pipx environment automatically)."
+
+    if ! python3 -c "import tkinter" 2>/dev/null; then
+        echo ""
+        echo "  WARNING: tkinter is not available."
+        echo "  Install it and reboot:"
+        echo "    rpm-ostree install python3-tkinter"
+        echo ""
+    fi
+
+    if ! command -v wmctrl &>/dev/null; then
+        echo ""
+        echo "  WARNING: wmctrl is not installed — window snapping will not work."
+        echo "  Install it and reboot:"
+        echo "    rpm-ostree install wmctrl"
+        echo ""
+    fi
 fi
 
 # ------------------------------------------------------------------ install Python package
 
 echo "==> Installing LinuxZones..."
-pip install --user --break-system-packages -q "$SCRIPT_DIR"
-echo "  → $LZ_BIN"
+
+if command -v pipx &>/dev/null; then
+    # pipx: always preferred — isolated venv, no system Python conflicts.
+    # On immutable systems it is the only valid option.
+    # --force reinstalls cleanly when upgrading an existing install.
+    pipx install "$SCRIPT_DIR" --force --quiet
+    echo "  → $LZ_BIN (via pipx)"
+
+elif [ "$IMMUTABLE" = true ]; then
+    echo ""
+    echo "ERROR: Immutable system detected but pipx was not found."
+    echo ""
+    echo "Install pipx first, then re-run this script:"
+    echo ""
+    echo "  pip install --user pipx --break-system-packages"
+    echo "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc"
+    echo "  source ~/.bashrc"
+    echo "  bash install.sh"
+    echo ""
+    exit 1
+
+else
+    pip install --user --break-system-packages -q "$SCRIPT_DIR"
+    echo "  → $LZ_BIN (via pip)"
+fi
 
 # ------------------------------------------------------------------ icon
 
@@ -166,7 +226,7 @@ fi
 
 echo ""
 echo "======================================================"
-echo " LinuxZones installed successfully!"
+echo " LinuxZones $VERSION installed successfully!"
 echo "======================================================"
 echo ""
 echo " Double-click 'LinuxZones' on your desktop to open"
