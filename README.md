@@ -2,7 +2,7 @@
 
 **Current version: 0.1.11**
 
-Window zone snapping for Linux — the core FancyZones workflow from Windows PowerToys, for X11. Drag a window, hold right-click over a zone to snap it, or hover near a zone boundary to span two zones at once. An optional keyboard modifier trigger (Shift / Alt / Ctrl) is available as an alternative to right-click.
+Window zone snapping for Linux — the core FancyZones workflow from Windows PowerToys, for X11. While dragging a window, a quick right-click drops it in place. Hold right-click to show the zone overlay, then release over a zone to snap it there. Hover near a zone boundary to span two adjacent zones at once. An optional keyboard modifier trigger (Shift / Alt / Ctrl) is also available.
 
 ---
 
