@@ -183,6 +183,18 @@ class LinuxZonesApp:
                 msg = self.ui_queue.get_nowait()
                 kind = msg[0]
                 if kind == "show":
+                    # Re-read geometry each time so a stale startup snapshot
+                    # or a resolution change doesn't leave the overlay at the
+                    # wrong size.  The daemon already re-reads work area at
+                    # snap time; we mirror that here for the visual overlay.
+                    self.screen_w, self.screen_h = _get_screen_size()
+                    self.work_x, self.work_y, self.work_w, self.work_h = (
+                        _get_work_area()
+                    )
+                    self.overlay.update_screen_geometry(
+                        self.screen_w, self.screen_h,
+                        self.work_x, self.work_y, self.work_w, self.work_h,
+                    )
                     self.overlay.show()
                 elif kind == "hide":
                     self.overlay.hide()

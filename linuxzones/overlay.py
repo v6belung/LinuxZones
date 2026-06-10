@@ -231,6 +231,33 @@ class ZoneOverlay:
 
     # ------------------------------------------------------------------ public API
 
+    def update_screen_geometry(
+        self,
+        screen_w: int,
+        screen_h: int,
+        work_x: int = 0,
+        work_y: int = 0,
+        work_w: int = 0,
+        work_h: int = 0,
+    ):
+        """Reposition/resize the overlay window after a screen geometry change.
+
+        Called before show() so a stale startup snapshot or a resolution change
+        never leaves the overlay at the wrong size.
+        """
+        self.screen_w = screen_w
+        self.screen_h = screen_h
+        self.work_x   = work_x
+        self.work_y   = work_y
+        self.work_w   = work_w if work_w > 0 else screen_w
+        self.work_h   = work_h if work_h > 0 else screen_h
+        if self._multi:
+            self.root.geometry(f"{self.screen_w}x{self.screen_h}+0+0")
+        else:
+            self.root.geometry(
+                f"{self.work_w}x{self.work_h}+{self.work_x}+{self.work_y}"
+            )
+
     def show(self):
         if not self._visible:
             self._visible = True
