@@ -32,6 +32,22 @@ In single-monitor mode they are fractions of the work area. In
 multi-monitor mode each monitor's layout zones are fractions of *that
 monitor's* own dimensions, not the full virtual screen.
 
+**Overlapping zones: smallest area wins.**
+`Layout.zone_at()` and the editor's `_zone_at_canvas()` return the
+smallest-area zone containing the cursor, not the first match in list
+order. This keeps a small zone nested inside a larger one reachable for
+hover/snap/select regardless of creation order. Equal-area ties fall back
+to list order. Drawing order in `overlay.py` and `editor.py` mirrors this
+(largest first, smallest last) so the smaller zone is never visually
+covered.
+
+**Zone labels use `label_anchor()`, not the rect center.**
+`zones.label_anchor()` shifts a zone's label away from a smaller,
+overlapping zone's border (e.g. a label at 50% height isn't hidden by the
+top edge of a smaller zone drawn on top). Only handles the case where the
+smaller zone fully spans the larger zone's width or height; falls back to
+the plain center otherwise.
+
 **Monitor detection uses `Xlib.ext.randr.get_monitors()`.**
 The struct fields are `width_in_pixels` / `height_in_pixels` — not
 `width` / `height` (which don't exist and will raise `AttributeError`).

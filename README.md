@@ -83,7 +83,7 @@ Right-click always works regardless of modifier settings.
 1. **Click and drag** on the canvas to draw a zone rectangle.
 2. Zones snap to a 5% grid automatically.
 3. **Left-click** a zone to select it; **right-click** (or **Delete Zone**) to remove it.
-4. Zones can overlap — the zone the cursor is inside when you release wins.
+4. Zones can overlap — if the cursor is inside more than one, the **smallest** zone wins, both in the editor and when snapping/highlighting. Labels reposition automatically so a smaller zone's border doesn't cover a larger zone's name.
 
 Zone coordinates are stored as fractions of the work area (0.0–1.0), so layouts are resolution-independent. The editor shows pixel dimensions for your current resolution. Configuration is saved to `~/.config/linuxzones/config.json`.
 

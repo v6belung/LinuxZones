@@ -1,7 +1,7 @@
 import tkinter as tk
 from typing import Dict, List, Optional, Tuple, Union
 
-from .zones import Zone, MonitorInfo, Layout
+from .zones import Zone, MonitorInfo, Layout, label_anchor
 
 ZONE_COLORS = ["#4a90d9", "#7b68ee", "#48c774", "#ff9f43", "#ff6b35", "#e84393"]
 ACTIVE_COLOR = "#ffffff"
@@ -96,7 +96,8 @@ class ZoneOverlay:
             self._draw_single()
 
     def _draw_single(self):
-        for i, zone in enumerate(self.zones):
+        # Largest zones first so smaller, overlapping zones are drawn on top.
+        for i, zone in sorted(enumerate(self.zones), key=lambda iz: -iz[1].area()):
             x, y, w, h = zone.pixel_rect(self.work_w, self.work_h)
             is_active = (self.active_zone == i)
             fill   = ACTIVE_COLOR if is_active else ZONE_COLORS[i % len(ZONE_COLORS)]
@@ -107,8 +108,9 @@ class ZoneOverlay:
                 fill=fill, outline="white", width=border,
             )
             label = zone.name or str(i + 1)
+            lfx, lfy = label_anchor(zone, self.zones)
             self.canvas.create_text(
-                x + w // 2, y + h // 2,
+                int(lfx * self.work_w), int(lfy * self.work_h),
                 text=label,
                 fill="black" if is_active else "white",
                 font=LABEL_FONT,
@@ -125,7 +127,8 @@ class ZoneOverlay:
                 # No layout assigned — draw nothing for this monitor.
                 continue
             zones = layout.zones
-            for i, zone in enumerate(zones):
+            # Largest zones first so smaller, overlapping zones are drawn on top.
+            for i, zone in sorted(enumerate(zones), key=lambda iz: -iz[1].area()):
                 # Canvas coords = monitor origin + zone fraction * monitor size
                 cx = mon.x + int(zone.x * mon.w)
                 cy = mon.y + int(zone.y * mon.h)
@@ -143,8 +146,9 @@ class ZoneOverlay:
                     fill=fill, outline="white", width=border,
                 )
                 label = zone.name or str(i + 1)
+                lfx, lfy = label_anchor(zone, zones)
                 self.canvas.create_text(
-                    cx + cw // 2, cy + ch // 2,
+                    mon.x + int(lfx * mon.w), mon.y + int(lfy * mon.h),
                     text=label,
                     fill="black" if is_active else "white",
                     font=LABEL_FONT,

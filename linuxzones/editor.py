@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import ttk, simpledialog, messagebox
 from typing import Dict, List, Optional, Tuple
 
-from .zones import Zone, Layout, ZonesConfig, MonitorInfo, DEFAULT_LAYOUTS, VALID_MODIFIERS, _coerce_modifier
+from .zones import Zone, Layout, ZonesConfig, MonitorInfo, DEFAULT_LAYOUTS, VALID_MODIFIERS, _coerce_modifier, label_anchor
 
 GRID     = 0.05   # snap-to-grid step (5 % of screen)
 EDGE_TOL = 7      # pixels — hit zone for edge-resize detection
@@ -381,11 +381,18 @@ class ZoneEditor:
         )
 
     def _zone_at_canvas(self, cx: int, cy: int) -> Optional[int]:
+        """Return the index of the smallest zone containing the point.
+
+        Mirrors Layout.zone_at: when zones overlap, the smallest-area zone
+        wins so a nested zone stays selectable.
+        """
         fx, fy = cx / self.pw, cy / self.ph
+        best: Optional[int] = None
         for i, z in enumerate(self._layout.zones):
             if z.contains(fx, fy):
-                return i
-        return None
+                if best is None or z.area() < self._layout.zones[best].area():
+                    best = i
+        return best
 
     def _edge_at_canvas(self, cx: int, cy: int) -> Optional[Tuple[int, set]]:
         """Return (zone_idx, edge_set) when cx,cy is within EDGE_TOL px of a zone edge."""
@@ -517,7 +524,8 @@ class ZoneEditor:
             1, 1, self.pw - 1, self.ph - 1,
             outline="#3a3a3a", width=1,
         )
-        for i, z in enumerate(self._layout.zones):
+        # Largest zones first so smaller, overlapping zones are drawn on top.
+        for i, z in sorted(enumerate(self._layout.zones), key=lambda iz: -iz[1].area()):
             x  = int(z.x * self.pw)
             y  = int(z.y * self.ph)
             w  = int(z.w * self.pw)
@@ -535,8 +543,9 @@ class ZoneEditor:
             )
             label = z.name or str(i + 1)
             pct   = f"{z.w * 100:.0f}% × {z.h * 100:.0f}%"
-            mid_x = x + w // 2
-            mid_y = y + h // 2
+            lfx, lfy = label_anchor(z, self._layout.zones)
+            mid_x = int(lfx * self.pw)
+            mid_y = int(lfy * self.ph)
             self.canvas.create_text(
                 mid_x, mid_y - 9,
                 text=label, fill="white",

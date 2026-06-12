@@ -82,6 +82,47 @@ class Zone:
     def contains(self, fx: float, fy: float) -> bool:
         return self.x <= fx < self.x + self.w and self.y <= fy < self.y + self.h
 
+    def area(self) -> float:
+        return self.w * self.h
+
+
+_LABEL_EPS = 1e-6  # float tolerance for edge-alignment checks in label_anchor
+
+
+def label_anchor(zone: Zone, zones: List[Zone]) -> Tuple[float, float]:
+    """Fractional (x, y) for zone's label, shifted away from any smaller,
+    overlapping zone's border.
+
+    Smaller zones are drawn on top (see overlay/editor draw order), so a
+    label centred in the full rect can sit under a smaller zone's border.
+    If a smaller overlapping zone fully spans this zone's width or height,
+    the label is centred in the remaining strip instead.
+    """
+    rx0, ry0 = zone.x, zone.y
+    rx1, ry1 = zone.x + zone.w, zone.y + zone.h
+    for other in zones:
+        if other is zone or other.area() >= zone.area():
+            continue
+        ox0, oy0 = other.x, other.y
+        ox1, oy1 = other.x + other.w, other.y + other.h
+        ix0, iy0 = max(rx0, ox0), max(ry0, oy0)
+        ix1, iy1 = min(rx1, ox1), min(ry1, oy1)
+        if ix0 >= ix1 or iy0 >= iy1:
+            continue  # no overlap
+        if ix0 <= rx0 + _LABEL_EPS and ix1 >= rx1 - _LABEL_EPS:
+            if iy0 <= ry0 + _LABEL_EPS:
+                ry0 = max(ry0, iy1)
+            elif iy1 >= ry1 - _LABEL_EPS:
+                ry1 = min(ry1, iy0)
+        elif iy0 <= ry0 + _LABEL_EPS and iy1 >= ry1 - _LABEL_EPS:
+            if ix0 <= rx0 + _LABEL_EPS:
+                rx0 = max(rx0, ix1)
+            elif ix1 >= rx1 - _LABEL_EPS:
+                rx1 = min(rx1, ix0)
+    if rx1 <= rx0 or ry1 <= ry0:
+        return zone.x + zone.w / 2, zone.y + zone.h / 2
+    return (rx0 + rx1) / 2, (ry0 + ry1) / 2
+
 
 @dataclass
 class Layout:
@@ -105,11 +146,19 @@ class Layout:
         )
 
     def zone_at(self, screen_x: int, screen_y: int, screen_w: int, screen_h: int) -> Optional[int]:
+        """Return the index of the smallest zone containing the point.
+
+        When zones overlap, the smallest-area zone wins, so a small zone
+        nested inside a larger one stays reachable for hover/snap. Ties
+        (equal area) fall back to list order.
+        """
         fx, fy = screen_x / screen_w, screen_y / screen_h
+        best: Optional[int] = None
         for i, zone in enumerate(self.zones):
             if zone.contains(fx, fy):
-                return i
-        return None
+                if best is None or zone.area() < self.zones[best].area():
+                    best = i
+        return best
 
     def margin_at(self, screen_x: int, screen_y: int,
                   screen_w: int, screen_h: int) -> Optional[Tuple[int, int]]:

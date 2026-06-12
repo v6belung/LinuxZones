@@ -153,6 +153,18 @@ def test_left_click_selects_existing_zone(make_editor):
     assert ed._selected == 0
 
 
+def test_left_click_in_nested_zone_selects_smaller_zone(make_editor):
+    # A small zone fully nested inside a larger one — clicking inside the
+    # small zone's footprint must select it, not the larger zone underneath.
+    layouts = {"nested": Layout("nested", [
+        Zone(0.0, 0.0, 1.0, 1.0, "big"),
+        Zone(0.4, 0.4, 0.2, 0.2, "small"),
+    ])}
+    ed = make_editor(layouts=layouts, active="nested")
+    ed._on_press(SimpleNamespace(x=int(ed.pw * 0.5), y=int(ed.ph * 0.5)))
+    assert ed._selected == 1
+
+
 def test_right_click_deletes_zone(make_editor):
     ed = make_editor()
     assert len(ed._layout.zones) == 2

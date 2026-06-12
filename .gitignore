@@ -13,3 +13,5 @@ __pycache__/
 # Packaging build artefacts
 *.deb
 linuxzones_*/
+build/
+*.egg-info/
