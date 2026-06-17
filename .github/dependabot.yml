@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Keep GitHub Actions pinned to commit SHAs but up to date: Dependabot opens a
+  # PR (bumping both the SHA and the trailing version comment) when a pinned
+  # action publishes a new release, so the pins never silently go stale.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
