@@ -34,6 +34,10 @@ from .zones import Layout, MonitorInfo
 
 DRAG_THRESHOLD = 8     # px of movement before left-drag is considered active
 SNAP_DELAY     = 0.10  # seconds to wait after faking button-1 release
+P_RESIZE_INC   = 1 << 6  # WM_NORMAL_HINTS flag bit advertising resize increments
+SNAP_RETRIES   = 4     # max resize attempts when a window won't fill its zone
+SNAP_RETRY_GAP = 0.06  # seconds between a resize and reading back its geometry
+GEOM_TOL       = 2     # px: treat a client this much under target as "filled"
 
 # Canonical modifier name → the X11 keysym names whose hardware keycodes should
 # trigger the overlay.  Both left and right variants are included so either
@@ -278,6 +282,41 @@ class ZoneDaemon:
             pass
         return (0, 0, 0, 0)
 
+    def _suppress_resize_increments(self, win) -> bool:
+        """Clear WM_NORMAL_HINTS resize increments so the WM honours exact pixels.
+
+        Terminals (gnome-terminal, xterm, …) advertise a character-cell resize
+        increment (e.g. 19 px per row) plus a base size.  On a programmatic
+        move/resize the WM rounds the window's size DOWN to a whole cell,
+        leaving a sliver of dead space between the window and the zone's bottom
+        (and sometimes right) edge.  OS-level maximize is exempt from increments
+        per EWMH, which is why that fills the screen fully.
+
+        Clearing the PResizeInc flag makes the WM honour our exact pixel size.
+        The hints are intentionally not restored afterwards — see ``_snap``.
+        Returns True if increments were present and cleared, else False.
+        """
+        try:
+            hints = win.get_wm_normal_hints()
+        except Exception:
+            return False
+        if not hints or not (hints.flags & P_RESIZE_INC):
+            return False
+        try:
+            win.set_wm_normal_hints(
+                flags=hints.flags & ~P_RESIZE_INC,
+                min_width=hints.min_width, min_height=hints.min_height,
+                max_width=hints.max_width, max_height=hints.max_height,
+                width_inc=1, height_inc=1,
+                min_aspect=hints.min_aspect, max_aspect=hints.max_aspect,
+                base_width=hints.base_width, base_height=hints.base_height,
+                win_gravity=hints.win_gravity,
+            )
+            self.ctrl_dpy.sync()
+            return True
+        except Exception:
+            return False
+
     def _unmaximize(self, win) -> None:
         """Remove maximised state — maximised windows ignore move/resize requests."""
         try:
@@ -362,24 +401,68 @@ class ZoneDaemon:
         # Step 2: Remove maximised state.
         self._unmaximize(win)
 
-        # Step 3a: Try wmctrl — the most reliable method on Cinnamon.
-        #   wmctrl -ir <hex_id> -e 0,x,y,w,h  (gravity=0 = current gravity)
-        #   wmctrl correctly converts outer-frame (x,y) to client position
-        #   by adding _NET_FRAME_EXTENTS, but passes w,h to the WM unchanged
-        #   as client dimensions.  We must supply client w,h (outer minus
-        #   frame extents) so the outer frame lands exactly on the zone rect.
-        #   For CSD windows frame extents are (0,0,0,0): no-op.
-        wm_w = max(1, zw - fl - fr)
-        wm_h = max(1, zh - ft - fb)
+        # Target CLIENT size (outer zone minus WM decorations).  wmctrl and the
+        # EWMH/configure fallbacks all drive the client to this size.
+        cw = max(1, zw - fl - fr)
+        ch = max(1, zh - ft - fb)
+
+        # Terminals advertise character-cell resize increments, so the WM rounds
+        # our resize DOWN to a whole cell and leaves a gap at the zone's bottom/
+        # right edge.  Clearing the increments is unreliable on its own for two
+        # reasons: (1) a *maximized* terminal temporarily drops its increment
+        # hints, so a single check right after un-maximizing sees none and skips
+        # the whole mechanism; (2) the GTK/VTE toolkit re-asserts its own hints
+        # asynchronously and can win the race, re-applying the rounding.  So we
+        # loop: clear increments, resize, read the geometry back, and if the
+        # window came up short of the zone, clear and resize again.
+        #
+        # The cleared increments are deliberately NOT restored: re-applying them
+        # makes the WM immediately re-validate the window against the cell grid
+        # and shrink it back, reintroducing the gap.  Leaving them cleared keeps
+        # the window filled; the terminal re-applies its own increments the next
+        # time the user resizes it manually, so cell-snapping returns naturally.
+        #
+        # Normal windows have no increments, fill exactly on the first pass, and
+        # break immediately (one geometry read-back, ~one SNAP_RETRY_GAP of added
+        # latency).  Terminals converge in 2-3 passes.
+        for attempt in range(SNAP_RETRIES):
+            self._suppress_resize_increments(win)
+            method = self._apply_geometry(win, win_id, zx, zy, fl, ft, cw, ch)
+            if method is None:
+                break  # every resize path failed; nothing more to try
+            time.sleep(SNAP_RETRY_GAP)
+            try:
+                g = win.get_geometry()
+            except Exception:
+                break
+            if g.width >= cw - GEOM_TOL and g.height >= ch - GEOM_TOL:
+                print(f"[linuxzones] snapped via {method} ✓ "
+                      f"({g.width}×{g.height}, attempt {attempt + 1})")
+                break
+            print(f"[linuxzones] via {method}: window came up "
+                  f"{cw - g.width}×{ch - g.height}px short of zone "
+                  f"(attempt {attempt + 1}/{SNAP_RETRIES}), retrying")
+
+    def _apply_geometry(self, win, win_id, zx, zy, fl, ft, cw, ch) -> Optional[str]:
+        """Drive one window to client size ``cw``×``ch`` at outer origin (zx, zy).
+
+        Tries wmctrl → _NET_MOVERESIZE_WINDOW (EWMH) → direct XConfigureWindow,
+        in that order, stopping at the first that succeeds.  ``fl``/``ft`` are the
+        left/top frame extents used to convert the outer origin to a client
+        origin for the EWMH/configure paths (wmctrl does that conversion itself).
+        Returns the method name that ran, or ``None`` if all failed.  Called once
+        per retry pass, so it does not log success itself — the caller does.
+        """
+        # Step 3a: wmctrl — the most reliable method on Cinnamon.  Takes the
+        #   OUTER frame origin and CLIENT size (it adds frame extents itself).
         try:
             r = subprocess.run(
-                ["wmctrl", "-ir", hex(win_id), "-e", f"0,{zx},{zy},{wm_w},{wm_h}"],
+                ["wmctrl", "-ir", hex(win_id), "-e", f"0,{zx},{zy},{cw},{ch}"],
                 timeout=2,
                 capture_output=True,
             )
             if r.returncode == 0:
-                print("[linuxzones] snapped via wmctrl ✓")
-                return
+                return "wmctrl"
             print(f"[linuxzones] wmctrl exited {r.returncode}: {r.stderr.decode().strip()}")
         except FileNotFoundError:
             print("[linuxzones] wmctrl not found — falling back to EWMH")
@@ -387,13 +470,10 @@ class ZoneDaemon:
         except Exception as e:
             print(f"[linuxzones] wmctrl error: {e}")
 
-        # Step 3b: Fallback — _NET_MOVERESIZE_WINDOW (EWMH).
-        #   Coordinates are for the CLIENT window (inner, no decorations).
-        #   We adjust using _NET_FRAME_EXTENTS so the outer frame fills the zone.
+        # Step 3b: _NET_MOVERESIZE_WINDOW (EWMH).  Coordinates are for the
+        #   CLIENT window, so shift the origin inward by the frame extents.
         cx = zx + fl
         cy = zy + ft
-        cw = max(1, zw - fl - fr)
-        ch = max(1, zh - ft - fb)
 
         # Flags: bits 8-11 = x/y/w/h present; bits 12-13 = source=2 (pager).
         # source=2 is required — Muffin/Mutter ignore source=1 from external apps.
@@ -409,16 +489,17 @@ class ZoneDaemon:
                 event_mask=X.SubstructureNotifyMask | X.SubstructureRedirectMask,
             )
             self.ctrl_dpy.sync()
-            print(f"[linuxzones] snapped via EWMH ✓  client=({cx},{cy} {cw}×{ch})")
+            return "EWMH"
         except Exception as e:
             print(f"[linuxzones] EWMH failed: {e}")
             # Step 3c: Last resort — direct XConfigureWindow.
             try:
                 win.configure(x=cx, y=cy, width=cw, height=ch)
                 self.ctrl_dpy.sync()
-                print("[linuxzones] snapped via direct configure ✓")
+                return "configure"
             except Exception as e2:
                 print(f"[linuxzones] all snap methods failed: {e2}")
+                return None
 
     # ------------------------------------------------------------------ event handling
 

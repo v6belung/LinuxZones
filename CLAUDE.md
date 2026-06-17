@@ -51,6 +51,34 @@ top edge of a smaller zone drawn on top). Only handles the case where the
 smaller zone fully spans the larger zone's width or height; falls back to
 the plain center otherwise.
 
+**Terminals: clear resize increments (and don't restore them), with a
+resize-verify-retry loop.**
+Terminals (gnome-terminal, xterm, …) advertise a character-cell resize
+increment plus base size in `WM_NORMAL_HINTS`, so the WM rounds a
+programmatic resize *down* to a whole cell and leaves a sliver of dead
+space at the zone's bottom/right edge. OS maximize is exempt from
+increments (per EWMH), which is why that fills fully. The fix took three
+findings, each of which broke a simpler version:
+- Clearing the `PResizeInc` flag (`_suppress_resize_increments()`) once is
+  not enough — VTE/GTK re-asserts its own hints asynchronously and can win
+  the race. So `_snap()` loops: clear → resize → read geometry back → if
+  short (> `GEOM_TOL`) repeat, up to `SNAP_RETRIES`.
+- A *maximized* terminal temporarily **drops** its increment hints, so a
+  check right after `_unmaximize()` sees none and would skip the mechanism.
+  The loop therefore runs unconditionally (not gated on increments being
+  present at the start) and re-clears every pass.
+- The cleared increments must **not** be restored. Re-applying them makes
+  the WM immediately re-validate the window against the cell grid and shrink
+  it back, reopening the gap (this was the bug that survived two earlier
+  attempts). Leaving them cleared keeps the window filled; the terminal
+  re-applies its own increments the next time the user resizes it manually.
+
+The resize chain (wmctrl → EWMH → configure) lives in `_apply_geometry()`,
+one attempt per call, returning the method name (the loop logs success).
+Non-terminal windows have no increments: they fill on the first pass and
+break immediately (one geometry read-back, ~one `SNAP_RETRY_GAP` of added
+latency).
+
 **Monitor detection uses `Xlib.ext.randr.get_monitors()`.**
 The struct fields are `width_in_pixels` / `height_in_pixels` — not
 `width` / `height` (which don't exist and will raise `AttributeError`).

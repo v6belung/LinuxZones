@@ -181,6 +181,13 @@ Right-click the icon → **Allow Launching**. If it persists, re-run `bash insta
 - Some windows resist external repositioning (fullscreen games, some Electron apps) — this is per-app, not a bug.
 - If snapping feels unreliable, increase `SNAP_DELAY` in `daemon.py` from `0.10` to `0.15`.
 
+**Window snaps but leaves a small gap on one edge**
+This used to affect terminals, which resize in whole character-cell steps and
+left a sliver of desktop along the bottom edge. LinuxZones now clears those
+resize increments during a snap (re-applying them whenever you next resize the
+window by hand) so the window fills the zone exactly. If you still see a gap on
+some app, it advertises a resize increment the WM is enforcing — report the app.
+
 **Right-click does nothing**
 Hold the left button down while right-clicking — both must be held simultaneously.
 
