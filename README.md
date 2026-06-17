@@ -20,12 +20,7 @@ Window zone snapping for Linux — the core FancyZones workflow from Windows Pow
 sudo apt install ./linuxzones_*.deb
 ```
 
-After installation, enable crash-recovery autostart:
-
-```bash
-systemctl --user enable linuxzones.service
-systemctl --user start linuxzones.service
-```
+That's it — dependencies are installed automatically and LinuxZones starts on your next login. To start it immediately, launch it from the application menu.
 
 **All other distros** — clone and run the installer:
 
@@ -111,13 +106,12 @@ Zone coordinates are stored as fractions of the work area (0.0–1.0), so layout
 
 ## Service management
 
-LinuxZones runs as a **systemd user service** (installed by `install.sh` or the `.deb`), which means it automatically restarts on crashes.
+LinuxZones starts automatically at login via an XDG autostart entry (installed by `install.sh` or the `.deb`) and otherwise runs as a plain background process — there's no systemd unit to manage.
 
 ```bash
-systemctl --user status linuxzones     # check if running
-systemctl --user restart linuxzones    # restart after a config change
-systemctl --user stop linuxzones       # stop
-journalctl --user -u linuxzones -f     # stream live logs
+pgrep -x linuxzones      # check if running
+pkill -x linuxzones      # stop (or restart after a config change)
+linuxzones                # start again
 ```
 
 ## Logs
@@ -178,30 +172,6 @@ linuxzones --version
 
 **"Allow Launching?" dialog on every launch**
 Right-click the icon → **Allow Launching**. If it persists, re-run `bash install.sh`.
-
-**Service fails to start at login (DISPLAY not set)**
-Some setups don't propagate `DISPLAY` to the systemd user environment automatically. Check with:
-```bash
-systemctl --user show-environment | grep DISPLAY
-```
-If it's missing, add this to your `~/.profile` or `~/.bash_profile`:
-```bash
-dbus-update-activation-environment --systemd DISPLAY XAUTHORITY
-```
-Then log out and back in. Alternatively, fall back to the `.desktop` autostart:
-```bash
-systemctl --user disable linuxzones.service
-cp ~/.config/systemd/user/linuxzones.service /dev/null   # disable service
-mkdir -p ~/.config/autostart
-cat > ~/.config/autostart/linuxzones.desktop <<'EOF'
-[Desktop Entry]
-Type=Application
-Name=LinuxZones
-Exec=/home/$USER/.local/bin/linuxzones
-Terminal=false
-X-GNOME-Autostart-enabled=true
-EOF
-```
 
 **Overlay doesn't appear**
 - Check you're in an X11 session: `echo $DISPLAY` should print `:0` or similar.

@@ -25,7 +25,10 @@ behaviour or desktop integration patterns.
 `graphical-session.target` is not activated by most desktop environments,
 so the systemd service would silently stay inactive. The `.desktop` file
 in `~/.config/autostart/` is what LAS uses and is universally reliable.
-`install.sh` disables any previously-installed service on re-run.
+`install.sh` disables any previously-installed service on re-run. The
+`.deb` (`build-deb.sh`) follows the same rule: it ships only
+`/etc/xdg/autostart/linuxzones.desktop`, no systemd unit. Don't
+reintroduce a packaged systemd service for either install path.
 
 **Zone coordinates are monitor-relative fractions (0.0–1.0).**
 In single-monitor mode they are fractions of the work area. In
