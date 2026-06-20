@@ -118,6 +118,27 @@ def test_save_then_load_round_trip(tmp_path, monkeypatch):
     assert [z.name for z in cfg2.layouts["halves"].zones] == ["left", "right"]
 
 
+def test_kbd_move_round_trip(tmp_path, monkeypatch):
+    cfg_dir = tmp_path / "linuxzones"
+    cfg_file = cfg_dir / "config.json"
+    monkeypatch.setattr(zones, "CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setattr(zones, "CONFIG_FILE", str(cfg_file))
+
+    saved = {"push-tile-left": ["<Super>Left"], "push-tile-right": ["<Super>Right"]}
+    save_config(ZonesConfig({"halves": Layout("halves", [])}, "halves",
+                            kbd_move=True, kbd_move_saved_bindings=saved))
+    cfg2 = load_config()
+    assert cfg2.kbd_move is True
+    assert cfg2.kbd_move_saved_bindings == saved
+
+
+def test_kbd_move_defaults_off_when_absent(tmp_path, monkeypatch):
+    _write_cfg(tmp_path, monkeypatch, {})
+    cfg = load_config()
+    assert cfg.kbd_move is False
+    assert cfg.kbd_move_saved_bindings == {}
+
+
 def test_save_leaves_no_temp_files_behind(tmp_path, monkeypatch):
     cfg_dir = tmp_path / "linuxzones"
     cfg_file = cfg_dir / "config.json"

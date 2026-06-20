@@ -67,6 +67,19 @@ Right-click always works regardless of modifier settings.
 
 > **Privacy:** the modifier trigger makes LinuxZones monitor key-press events globally (in addition to mouse events) so it can detect the modifier during a drag. Keystrokes are checked in-process for the chosen modifier only and are never recorded, stored, or transmitted. Leave this off to limit monitoring to the mouse.
 
+### Keyboard zone navigation — Super+Arrow (optional)
+
+Enable **Move windows with Super+Arrow** in the Layout Editor under **Settings**. Then, with no drag needed:
+
+- **Super+→ / ← / ↑ / ↓** moves the *active* window to the next zone in that direction.
+- It picks the next zone spatially (like FancyZones' "relative position" mode): the nearest zone in the arrow's direction, preferring one that lines up with the current zone.
+- If the window isn't in a zone yet, the first press snaps it to the nearest one.
+- At a monitor's edge, the next press hops to the adjacent monitor's zones.
+
+Because `Super+Arrow` is normally bound to your desktop's window-tiling shortcut, enabling this **clears that shortcut** (via `gsettings`) so the keys are free for LinuxZones to use. The original shortcut is **automatically restored** when you turn the feature off or quit LinuxZones — so while the app isn't running, `Super+Arrow` behaves normally again. The cleared values are also saved in the config file, so they can always be restored even after a crash.
+
+> Detection uses the same in-process key monitoring as the modifier trigger above; the same privacy note applies.
+
 ---
 
 ## Configuring zones
@@ -215,6 +228,8 @@ sudo apt install python3-tk
   "overlay_opacity": 0.5,
   "modifier_snap": false,
   "modifier_key": "shift",
+  "kbd_move": false,
+  "kbd_move_saved_bindings": {},
   "layouts": {
     "ultrawide-8-16-8": {
       "name": "ultrawide-8-16-8",
@@ -229,6 +244,8 @@ sudo apt install python3-tk
 ```
 
 Zone values are fractions (0.0–1.0). The `name` field is optional and used as the zone label in the overlay.
+
+`kbd_move` enables Super+Arrow zone navigation. `kbd_move_saved_bindings` is managed automatically — it records the desktop's original `Super+Arrow` shortcut(s) so they can be restored when the feature is disabled.
 
 ---
 

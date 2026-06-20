@@ -79,6 +79,36 @@ Non-terminal windows have no increments: they fill on the first pass and
 break immediately (one geometry read-back, ~one `SNAP_RETRY_GAP` of added
 latency).
 
+The geometry engine (un-maximize + increment retry loop + `_apply_geometry`)
+lives in `_apply_zone()`. `_snap()` is the drag-release path: it first fakes a
+B1 release to cancel the WM's drag grab, then calls `_apply_zone()`. The
+keyboard-move path calls `_apply_zone()` directly (no drag, no fake release).
+
+**Super+Arrow zone move uses passive RECORD + clearing the WM keybinding, not
+`XGrabKey`.** `Super+Arrow` is owned by the WM (on Cinnamon,
+`org.cinnamon.desktop.keybindings.wm push-tile-*`). X11 passive grabs are
+exclusive, so a second `XGrabKey` on it just fails with `BadAccess` — grabbing
+a WM-owned key is a dead end. Instead, when `kbd_move` is enabled the daemon
+*clears* the conflicting accelerators via `gsettings` (Muffin releases its grab
+live) and observes the keys through the **same passive RECORD path used for
+modifier snap** — no grab, no extra display connection (still two), no
+lock-mask permutations, no `MappingNotify`. The cleared bindings are
+snapshotted into `kbd_move_saved_bindings` (persisted in config, so a crash
+can't lose the originals) and restored on disable and on every clean exit
+(`restore_kbd_bindings`, also via `atexit`), handing `Super+Arrow` back to the
+WM whenever LinuxZones isn't running. `_free_super_arrows()` never re-records a
+snapshot it already has, so re-freeing on the next startup can't overwrite the
+originals with the (already-cleared) empty lists. Caveat: with the key
+ungrabbed the focused app also receives `Super+Arrow`, but Super-modified keys
+are conventionally WM-reserved and ignored by apps.
+
+Navigation is spatial (`Layout.zone_in_direction`, FancyZones "relative
+position": nearest zone in the arrow direction, perpendicular-overlap
+preferred). `Layout.zone_for_point` finds the current zone (smallest-area wins,
+nearest-centre fallback). At a monitor edge `_cross_monitor_target` /
+`_entry_zone` hop to the adjacent monitor. Auto-repeat is rejected with the
+same shared-timestamp trick as modifier snap, so one move per physical press.
+
 **Monitor detection uses `Xlib.ext.randr.get_monitors()`.**
 The struct fields are `width_in_pixels` / `height_in_pixels` — not
 `width` / `height` (which don't exist and will raise `AttributeError`).
@@ -114,4 +144,7 @@ Actions release workflow triggers on that tag.
 `~/.config/linuxzones/config.json` — written atomically (temp file +
 fsync + `os.replace`). Includes `monitor_layouts` dict mapping RandR
 output name (e.g. `"HDMI-1"`) to layout name; absent entries fall back
-to `active_layout`.
+to `active_layout`. `kbd_move` (bool) enables Super+Arrow zone navigation;
+`kbd_move_saved_bindings` is the auto-managed snapshot of the WM shortcut(s)
+cleared to free `Super+Arrow`, kept so they survive a crash and can be
+restored.

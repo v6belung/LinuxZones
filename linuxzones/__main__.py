@@ -107,6 +107,8 @@ class LinuxZonesApp:
         self.mod_snap        = cfg.mod_snap
         self.mod_key         = cfg.mod_key
         self.monitor_layouts = cfg.monitor_layouts
+        self.kbd_move        = cfg.kbd_move
+        self.kbd_move_saved  = cfg.kbd_move_saved_bindings
 
         if layout_override:
             if layout_override not in self.layouts:
@@ -151,10 +153,30 @@ class LinuxZonesApp:
             monitors=self.monitors,
             monitor_layouts=self.monitor_layouts,
             layouts=self.layouts,
+            kbd_move=self.kbd_move,
+            kbd_move_saved=self.kbd_move_saved,
         )
         threading.Thread(
             target=self.daemon.run, daemon=True, name="linuxzones-record"
         ).start()
+
+        # If Super+Arrow move is enabled, clear the conflicting WM shortcut now
+        # (the RECORD range already includes keyboard events for it).  Persist
+        # any newly-recorded snapshot so the originals survive a crash, and make
+        # sure the shortcut is handed back to the WM whenever we exit.
+        if self.kbd_move:
+            self.daemon.update_kbd_move(True)
+            saved = self.daemon.kbd_move_saved
+            if saved != self.kbd_move_saved:
+                self.kbd_move_saved = saved
+                self._save_config(cfg.__class__(
+                    layouts=self.layouts, active=self.active, opacity=self.opacity,
+                    mod_snap=self.mod_snap, mod_key=self.mod_key,
+                    monitor_layouts=self.monitor_layouts,
+                    kbd_move=self.kbd_move, kbd_move_saved_bindings=saved,
+                ))
+        import atexit
+        atexit.register(self.daemon.restore_kbd_bindings)
 
         # SIGUSR1 → open editor.
         # A second invocation of 'linuxzones' sends this signal so double-clicking
@@ -167,9 +189,13 @@ class LinuxZonesApp:
         print(f"  Opacity: {int(self.opacity * 100)}%")
         if mod_line:
             print(mod_line)
+        if self.kbd_move:
+            print( "  Super+Arrow move: enabled")
         print( "  Drag a window → hold right-click → release to snap to a zone.")
         if self.mod_snap:
             print(f"  Or hold {self.mod_key.capitalize()} while dragging as an alternative snap trigger.")
+        if self.kbd_move:
+            print( "  Or press Super+←/→/↑/↓ to move the active window between zones.")
         print( "  Double-click the desktop icon again to open the layout editor.")
         print( "  Stop:  pkill linuxzones")
         print()
@@ -234,6 +260,8 @@ class LinuxZonesApp:
             master=self.root,
             monitors=self.monitors,
             monitor_layouts=self.monitor_layouts,
+            kbd_move=self.kbd_move,
+            kbd_move_saved_bindings=self.kbd_move_saved,
         )
         result = editor.run()
 
@@ -244,7 +272,7 @@ class LinuxZonesApp:
             self.mod_snap        = result.mod_snap
             self.mod_key         = result.mod_key
             self.monitor_layouts = result.monitor_layouts
-            save_config(result)
+            self.kbd_move        = result.kbd_move
 
             new_layout = result.layouts[result.active]
             self.overlay.update_zones(new_layout.zones)
@@ -255,6 +283,12 @@ class LinuxZonesApp:
             self.daemon.update_monitor_config(
                 self.monitors, self.monitor_layouts, self.layouts)
             self.daemon.update_mod_snap(result.mod_snap, result.mod_key)
+            # Apply the Super+Arrow toggle: this frees or restores the WM
+            # shortcut, so read the updated snapshot back before persisting.
+            self.daemon.update_kbd_move(result.kbd_move)
+            self.kbd_move_saved = self.daemon.kbd_move_saved
+            result.kbd_move_saved_bindings = dict(self.kbd_move_saved)
+            save_config(result)
 
             print(
                 f"[linuxzones] Saved: layout='{result.active}', "
@@ -265,6 +299,8 @@ class LinuxZonesApp:
     # ------------------------------------------------------------------ quit
 
     def _quit(self):
+        # Hand Super+Arrow back to the window manager while we're not running.
+        self.daemon.restore_kbd_bindings()
         self.root.destroy()
 
     # ------------------------------------------------------------------ run
@@ -384,6 +420,7 @@ def cmd_editor():
         cfg.layouts, cfg.active, screen_w, screen_h,
         opacity=cfg.opacity, modifier_snap=cfg.mod_snap, modifier_key=cfg.mod_key,
         monitors=monitors, monitor_layouts=cfg.monitor_layouts,
+        kbd_move=cfg.kbd_move, kbd_move_saved_bindings=cfg.kbd_move_saved_bindings,
     )
     result = editor.run()
     if result:

@@ -65,6 +65,14 @@ def make_daemon(halves_layout):
         d._mod_last_release_time = -1
         d._mod_keycodes     = frozenset({50})   # pretend keycode 50 == the modifier
 
+        # Keyboard zone-move state (Super+Arrow).  Disabled by default; tests
+        # that exercise it set _kbd_move and _arrow_keycodes explicitly.
+        d._kbd_move              = False
+        d._kbd_move_saved        = {}
+        d._arrow_keycodes        = {}      # keycode → direction
+        d._super_mask            = 1 << 6  # pretend Super == Mod4
+        d._arrow_last_release_time = -1
+
         # Multi-monitor (disabled in tests — single-monitor path only)
         d._multi           = False
         d._monitors        = []

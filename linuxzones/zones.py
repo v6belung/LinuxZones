@@ -197,6 +197,87 @@ class Layout:
         return Zone(x, y, max(a.x + a.w, b.x + b.w) - x,
                         max(a.y + a.h, b.y + b.h) - y)
 
+    def zone_for_point(self, fx: float, fy: float) -> Optional[int]:
+        """Index of the zone best matching fractional point (fx, fy).
+
+        Used for keyboard navigation, where a window's centre is the point.
+        Containment uses the project's smallest-area-wins rule (so a nested
+        zone stays reachable); if the point is inside no zone, fall back to the
+        zone whose centre is closest, so the first Super+Arrow always has a
+        starting zone.  Returns None only when the layout has no zones.
+        """
+        if not self.zones:
+            return None
+        best: Optional[int] = None
+        for i, zone in enumerate(self.zones):
+            if zone.contains(fx, fy):
+                if best is None or zone.area() < self.zones[best].area():
+                    best = i
+        if best is not None:
+            return best
+        # No containing zone — nearest centre wins.
+        return min(
+            range(len(self.zones)),
+            key=lambda i: (self.zones[i].x + self.zones[i].w / 2 - fx) ** 2
+                        + (self.zones[i].y + self.zones[i].h / 2 - fy) ** 2,
+        )
+
+    def zone_in_direction(self, from_idx: int, direction: str) -> Optional[int]:
+        """Index of the next zone from ``from_idx`` in ``direction``.
+
+        ``direction`` is one of "left", "right", "up", "down".  Uses the
+        FancyZones "relative position" model: candidates are zones whose centre
+        lies strictly in the pressed direction; among them, zones overlapping
+        the source on the perpendicular axis are preferred, then the nearest by
+        primary-axis gap, then the smallest perpendicular offset, then list
+        order (matching the equal-area tie-break in ``zone_at``).  Returns None
+        when there is no zone in that direction (the caller may then traverse to
+        an adjacent monitor).
+        """
+        if from_idx < 0 or from_idx >= len(self.zones):
+            return None
+        src = self.zones[from_idx]
+        scx, scy = src.x + src.w / 2, src.y + src.h / 2
+        horizontal = direction in ("left", "right")
+
+        best: Optional[int] = None
+        best_key: Optional[Tuple[bool, float, float, int]] = None
+        for i, z in enumerate(self.zones):
+            if i == from_idx:
+                continue
+            cx, cy = z.x + z.w / 2, z.y + z.h / 2
+            if direction == "right":
+                if cx <= scx:
+                    continue
+                primary = cx - scx
+            elif direction == "left":
+                if cx >= scx:
+                    continue
+                primary = scx - cx
+            elif direction == "down":
+                if cy <= scy:
+                    continue
+                primary = cy - scy
+            elif direction == "up":
+                if cy >= scy:
+                    continue
+                primary = scy - cy
+            else:
+                return None
+
+            if horizontal:
+                overlap = src.y < z.y + z.h and z.y < src.y + src.h
+                perp = abs(cy - scy)
+            else:
+                overlap = src.x < z.x + z.w and z.x < src.x + src.w
+                perp = abs(cx - scx)
+
+            # not-overlap sorts after overlap; then nearest primary, perp, index.
+            key = (not overlap, primary, perp, i)
+            if best_key is None or key < best_key:
+                best_key, best = key, i
+        return best
+
 
 MARGIN_PX = 10        # half-width of the between-zone snap strip (pixels)
 _BOUNDARY_TOL = 0.002  # fractional tolerance for zone-edge adjacency detection
@@ -240,6 +321,11 @@ class ZonesConfig:
     mod_snap:        bool  = False
     mod_key:         str   = DEFAULT_MODIFIER
     monitor_layouts: Dict[str, str] = field(default_factory=dict)
+    # Keyboard zone navigation: Super+Arrow moves the active window between
+    # zones.  Enabling it clears the conflicting WM shortcut (snapshotted into
+    # kbd_move_saved_bindings) so it can be restored when disabled — see daemon.
+    kbd_move:                bool = False
+    kbd_move_saved_bindings: Dict[str, list] = field(default_factory=dict)
 
 
 def _sanitize_zones(zones: List[Zone]) -> List[Zone]:
@@ -307,8 +393,14 @@ def load_config() -> ZonesConfig:
             k: v for k, v in raw_ml.items()
             if isinstance(k, str) and isinstance(v, str) and v in layouts
         }
+        kbd_move = bool(data.get("kbd_move", False))
+        raw_saved = data.get("kbd_move_saved_bindings", {})
+        saved_bindings: Dict[str, list] = {
+            k: list(v) for k, v in raw_saved.items()
+            if isinstance(k, str) and isinstance(v, list)
+        }
         return ZonesConfig(layouts, active, opacity, modifier_snap, modifier_key,
-                           monitor_layouts)
+                           monitor_layouts, kbd_move, saved_bindings)
     except Exception as e:
         print(f"[linuxzones] Config load error: {e}. Using defaults.")
         return ZonesConfig(dict(DEFAULT_LAYOUTS), "ultrawide-8-16-8")
@@ -325,6 +417,8 @@ def save_config(cfg: ZonesConfig) -> None:
         # still be read by an older binary (graceful downgrade).
         "shift_snap": bool(cfg.mod_snap) and _coerce_modifier(cfg.mod_key) == "shift",
         "monitor_layouts": dict(cfg.monitor_layouts),
+        "kbd_move": bool(cfg.kbd_move),
+        "kbd_move_saved_bindings": {k: list(v) for k, v in cfg.kbd_move_saved_bindings.items()},
         "layouts": {name: l.to_dict() for name, l in cfg.layouts.items()},
     }
     # Atomic write: serialise to a temp file in the same directory, fsync it,

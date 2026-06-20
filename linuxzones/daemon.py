@@ -18,6 +18,7 @@ The daemon runs on a background thread and communicates with the Tkinter
 overlay via a thread-safe queue.Queue.
 """
 
+import ast
 import queue
 import subprocess
 import time
@@ -48,6 +49,22 @@ _MODIFIER_KEYSYMS = {
     "ctrl":  ("XK_Control_L", "XK_Control_R"),
 }
 
+# Arrow keysym → navigation direction, used by the Super+Arrow zone-move
+# feature.  Resolved to hardware keycodes once at startup (see
+# _resolve_arrow_keycodes), exactly like the modifier keysyms above.
+_ARROW_KEYSYMS = {
+    "XK_Left":  "left",
+    "XK_Right": "right",
+    "XK_Up":    "up",
+    "XK_Down":  "down",
+}
+
+# gsettings schema holding Cinnamon/Muffin window keybindings, and the four
+# Super+Arrow accelerators we must free so RECORD can observe the keys without
+# the WM also acting.  See _free_super_arrows / _restore_super_arrows.
+_WM_KEYBINDINGS_SCHEMA = "org.cinnamon.desktop.keybindings.wm"
+_SUPER_ARROW_ACCELS = ("<Super>Left", "<Super>Right", "<Super>Up", "<Super>Down")
+
 
 def _ev_time(event) -> int:
     """X server timestamp (ms) of a key/button event, or -2 if unavailable.
@@ -71,7 +88,9 @@ class ZoneDaemon:
                  mod_snap: bool = False, mod_key: str = "shift",
                  monitors: Optional[List[MonitorInfo]] = None,
                  monitor_layouts: Optional[dict] = None,
-                 layouts: Optional[dict] = None):
+                 layouts: Optional[dict] = None,
+                 kbd_move: bool = False,
+                 kbd_move_saved: Optional[dict] = None):
         self.layout   = layout
         self.ui_queue = ui_queue
 
@@ -142,6 +161,23 @@ class ZoneDaemon:
         # Resolve the chosen modifier's hardware keycodes once at startup.
         self._mod_keycodes: frozenset = self._resolve_mod_keycodes(self._mod_key)
 
+        # Keyboard zone navigation (Super+Arrow moves the active window between
+        # zones).  Detected through the same passive RECORD path as modifier
+        # snap — no key grab.  The conflicting WM shortcut is cleared separately
+        # (see update_kbd_move / _free_super_arrows) so the WM doesn't also act.
+        self._kbd_move: bool = kbd_move
+        # Snapshot of WM keybindings we cleared so Super+Arrow is free; persisted
+        # in config so the originals survive a crash and can always be restored.
+        self._kbd_move_saved: dict = dict(kbd_move_saved or {})
+        # keycode → direction ("left"/"right"/"up"/"down").
+        self._arrow_keycodes: Dict[int, str] = self._resolve_arrow_keycodes()
+        # Modifier mask bit that means "Super is held" in an event's state.
+        self._super_mask: int = self._resolve_super_mask()
+        # X server timestamp of the last arrow KeyRelease, for auto-repeat
+        # rejection (same timestamp trick as _mod_last_release_time): one move
+        # per physical press, holding the key does not repeat.
+        self._arrow_last_release_time: int = -1
+
         # Active RECORD context handle (valid while record_enable_context is
         # blocking) and a flag used to break out of it intentionally when the
         # event subscription must change.  See run() / update_mod_snap().
@@ -157,6 +193,37 @@ class ZoneDaemon:
             return frozenset(c for c in codes if c)
         except Exception:
             return frozenset()
+
+    def _resolve_arrow_keycodes(self) -> Dict[int, str]:
+        """Map the arrow keys' hardware keycodes to navigation directions."""
+        out: Dict[int, str] = {}
+        try:
+            from Xlib import XK as _xk
+            for keysym_name, direction in _ARROW_KEYSYMS.items():
+                kc = self.ctrl_dpy.keysym_to_keycode(getattr(_xk, keysym_name))
+                if kc:
+                    out[kc] = direction
+        except Exception:
+            pass
+        return out
+
+    def _resolve_super_mask(self) -> int:
+        """Return the modifier mask bit that represents the Super key.
+
+        Scans the modifier map for the Super_L keycode; the mask of modifier
+        index i is ``1 << i`` (Shift=0 … Mod5=7).  Falls back to Mod4Mask, the
+        near-universal binding for Super.
+        """
+        try:
+            from Xlib import XK as _xk
+            super_kc = self.ctrl_dpy.keysym_to_keycode(_xk.XK_Super_L)
+            mapping = self.ctrl_dpy.get_modifier_mapping()
+            for index, keycodes in enumerate(mapping):
+                if super_kc and super_kc in keycodes:
+                    return 1 << index
+        except Exception:
+            pass
+        return X.Mod4Mask
 
     # ------------------------------------------------------------------ work area
 
@@ -350,8 +417,6 @@ class ZoneDaemon:
         wx, wy, ww, wh = self._get_work_area()
         self._work_x, self._work_y, self._work_w, self._work_h = wx, wy, ww, wh
 
-        win_id = win.id
-
         # Determine origin and size for this snap operation.
         mon = self._current_monitor
         if self._multi and mon is not None:
@@ -363,10 +428,35 @@ class ZoneDaemon:
 
         if isinstance(target, tuple):
             zone = snap_layout.spanning_zone(*target)
-            zone_desc = f"margin{target}"
         else:
             zone = snap_layout.zones[target]
-            zone_desc = str(target)
+
+        # Step 1: Cancel the WM's pointer grab so it stops moving the window.
+        #         Without this the WM continues tracking the drag and overrides us.
+        #         Set the swallow flag BEFORE sending so the RECORD loop discards
+        #         the echo of this synthetic event and leaves state untouched.
+        #         (A keyboard move has no drag grab and calls _apply_zone directly.)
+        try:
+            from Xlib.ext import xtest
+            self._swallow_b1_release = True
+            xtest.fake_input(self.ctrl_dpy, X.ButtonRelease, 1)
+            self.ctrl_dpy.sync()
+            time.sleep(SNAP_DELAY)
+        except Exception as e:
+            self._swallow_b1_release = False   # XTest failed — nothing to swallow
+            print(f"[linuxzones] XTest unavailable ({e}), snap may be unreliable")
+
+        self._apply_zone(win, zone, ox, oy, ow, oh)
+
+    def _apply_zone(self, win, zone, ox: int, oy: int, ow: int, oh: int) -> None:
+        """Drive ``win`` to fill ``zone`` (fractions of the ox/oy/ow/oh box).
+
+        Shared by drag-release snapping (``_snap``, which first cancels the WM
+        drag grab) and Super+Arrow keyboard moves (``_on_move_key``, which calls
+        this directly).  Handles WM/GTK frame extents, un-maximising, and the
+        resize-increment clear/retry loop that makes terminals fill fully.
+        """
+        win_id = win.id
         zx = ox + int(zone.x * ow)
         zy = oy + int(zone.y * oh)
         zw = int(zone.w * ow)
@@ -382,23 +472,9 @@ class ZoneDaemon:
             zx -= gl;  zy -= gt
             zw += gl + gr;  zh += gt + gb
 
-        print(f"[linuxzones] snapping 0x{win_id:x} → zone {zone_desc} ({zx},{zy} {zw}×{zh})")
+        print(f"[linuxzones] snapping 0x{win_id:x} → ({zx},{zy} {zw}×{zh})")
 
-        # Step 1: Cancel the WM's pointer grab so it stops moving the window.
-        #         Without this the WM continues tracking the drag and overrides us.
-        #         Set the swallow flag BEFORE sending so the RECORD loop discards
-        #         the echo of this synthetic event and leaves state untouched.
-        try:
-            from Xlib.ext import xtest
-            self._swallow_b1_release = True
-            xtest.fake_input(self.ctrl_dpy, X.ButtonRelease, 1)
-            self.ctrl_dpy.sync()
-            time.sleep(SNAP_DELAY)
-        except Exception as e:
-            self._swallow_b1_release = False   # XTest failed — nothing to swallow
-            print(f"[linuxzones] XTest unavailable ({e}), snap may be unreliable")
-
-        # Step 2: Remove maximised state.
+        # Remove maximised state — maximised windows ignore move/resize requests.
         self._unmaximize(win)
 
         # Target CLIENT size (outer zone minus WM decorations).  wmctrl and the
@@ -501,6 +577,150 @@ class ZoneDaemon:
                 print(f"[linuxzones] all snap methods failed: {e2}")
                 return None
 
+    # ------------------------------------------------------------------ keyboard zone move
+
+    def _abs_geometry(self, win) -> Optional[Tuple[int, int, int, int]]:
+        """Return the window's (x, y, w, h) in absolute root coordinates."""
+        try:
+            g = win.get_geometry()
+            t = self.root.translate_coords(win, 0, 0)
+            return int(t.x), int(t.y), int(g.width), int(g.height)
+        except Exception:
+            return None
+
+    def _move_context(self, cx: float, cy: float):
+        """Resolve (layout, ox, oy, ow, oh, monitor) for the box at (cx, cy).
+
+        In multi-monitor mode this is the monitor under the point and its
+        per-monitor layout; otherwise the work area and the active layout.
+        """
+        if self._multi:
+            mon = self._monitor_at(int(cx), int(cy))
+            if mon is None and self._monitors:
+                mon = self._monitors[0]
+            if mon is not None:
+                return self._layout_for_monitor(mon), mon.x, mon.y, mon.w, mon.h, mon
+        wx, wy, ww, wh = self._get_work_area()
+        return self.layout, wx, wy, ww, wh, None
+
+    def _on_move_key(self, direction: str) -> None:
+        """Move the active window to the next zone in ``direction``.
+
+        Picks the current zone from the window's centre, then the next zone via
+        ``Layout.zone_in_direction``; if there is none at a monitor edge, hops
+        to the adjacent monitor's entry zone.  Reuses ``_apply_zone`` (no XTest
+        drag-cancel — there is no drag).
+        """
+        win = self._active_window()
+        if not win:
+            return
+        geom = self._abs_geometry(win)
+        if geom is None:
+            return
+        ax, ay, aw, ah = geom
+        cx, cy = ax + aw / 2.0, ay + ah / 2.0
+
+        layout, ox, oy, ow, oh, mon = self._move_context(cx, cy)
+        if not layout.zones or ow <= 0 or oh <= 0:
+            return
+
+        cur = layout.zone_for_point((cx - ox) / ow, (cy - oy) / oh)
+        if cur is None:
+            return
+        nxt = layout.zone_in_direction(cur, direction)
+        if nxt is not None:
+            self._apply_zone(win, layout.zones[nxt], ox, oy, ow, oh)
+            return
+
+        # Nothing in that direction on this monitor — traverse to the next.
+        if self._multi and mon is not None:
+            target = self._cross_monitor_target(mon, direction, cx, cy)
+            if target is not None:
+                tmon, tlayout, tidx = target
+                self._apply_zone(win, tlayout.zones[tidx],
+                                 tmon.x, tmon.y, tmon.w, tmon.h)
+
+    def _cross_monitor_target(self, mon: MonitorInfo, direction: str,
+                              cx: float, cy: float):
+        """Pick (monitor, layout, zone_idx) on the monitor adjacent in direction.
+
+        Among monitors lying in ``direction`` of ``mon``, choose the nearest one
+        whose perpendicular span overlaps ``mon``; then choose that monitor's
+        entry zone (nearest the shared edge, best perpendicular alignment with
+        the window centre).  Returns None when there is no monitor that way.
+        """
+        best = None
+        best_key = None
+        for m in self._monitors:
+            if m is mon:
+                continue
+            if direction == "right":
+                if m.x < mon.x + mon.w:
+                    continue
+                primary = m.x - (mon.x + mon.w)
+                overlap = min(mon.y + mon.h, m.y + m.h) - max(mon.y, m.y)
+            elif direction == "left":
+                if m.x + m.w > mon.x:
+                    continue
+                primary = mon.x - (m.x + m.w)
+                overlap = min(mon.y + mon.h, m.y + m.h) - max(mon.y, m.y)
+            elif direction == "down":
+                if m.y < mon.y + mon.h:
+                    continue
+                primary = m.y - (mon.y + mon.h)
+                overlap = min(mon.x + mon.w, m.x + m.w) - max(mon.x, m.x)
+            elif direction == "up":
+                if m.y + m.h > mon.y:
+                    continue
+                primary = mon.y - (m.y + m.h)
+                overlap = min(mon.x + mon.w, m.x + m.w) - max(mon.x, m.x)
+            else:
+                return None
+            key = (overlap <= 0, primary)
+            if best_key is None or key < best_key:
+                best_key, best = key, m
+        if best is None:
+            return None
+        tlayout = self._layout_for_monitor(best)
+        if not tlayout.zones:
+            return None
+        tidx = self._entry_zone(tlayout, direction, best, cx, cy)
+        if tidx is None:
+            return None
+        return best, tlayout, tidx
+
+    def _entry_zone(self, layout: Layout, direction: str, mon: MonitorInfo,
+                    cx: float, cy: float) -> Optional[int]:
+        """Index of ``layout``'s entry zone when crossing into ``mon``.
+
+        Entering from the left (moving right) prefers the leftmost zone, etc.;
+        ties broken by alignment with the window centre's perpendicular position
+        mapped into the new monitor's fraction space.
+        """
+        if direction in ("left", "right"):
+            ref = (cy - mon.y) / mon.h if mon.h else 0.5
+        else:
+            ref = (cx - mon.x) / mon.w if mon.w else 0.5
+        ref = min(max(ref, 0.0), 1.0)
+
+        best = None
+        best_key = None
+        for i, z in enumerate(layout.zones):
+            if direction == "right":
+                primary, perp = z.x, abs(z.y + z.h / 2 - ref)
+            elif direction == "left":
+                primary, perp = -(z.x + z.w), abs(z.y + z.h / 2 - ref)
+            elif direction == "down":
+                primary, perp = z.y, abs(z.x + z.w / 2 - ref)
+            elif direction == "up":
+                primary, perp = -(z.y + z.h), abs(z.x + z.w / 2 - ref)
+            else:
+                return None
+            key = (primary, perp, i)
+            if best_key is None or key < best_key:
+                best_key, best = key, i
+        return best
+
     # ------------------------------------------------------------------ event handling
 
     def _release_zone(self, event) -> Optional[Union[int, Tuple[int, int]]]:
@@ -524,6 +744,17 @@ class ZoneDaemon:
         # ---- Keyboard events (modifier key snap) -------------------------
         if etype == X.KeyPress:
             kc = event.detail
+            # Super+Arrow zone navigation — independent of drag state and of
+            # modifier snap.  Arrow keys are never modifier keys, so this never
+            # overlaps the mod-snap handling below.
+            if self._kbd_move and kc in self._arrow_keycodes:
+                # Reject auto-repeat: a repeat KeyPress shares the timestamp of
+                # the KeyRelease that immediately preceded it.  One move per
+                # physical press; holding the key does not repeat.
+                if (event.state & self._super_mask) and \
+                        _ev_time(event) != self._arrow_last_release_time:
+                    self._on_move_key(self._arrow_keycodes[kc])
+                return
             if kc not in self._mod_keycodes or not self._mod_snap:
                 return
             # Ignore auto-repeat: an auto-repeat KeyPress carries the same X
@@ -547,6 +778,11 @@ class ZoneDaemon:
 
         elif etype == X.KeyRelease:
             kc = event.detail
+            if self._kbd_move and kc in self._arrow_keycodes:
+                # Record the release timestamp so the next same-timestamp
+                # KeyPress is recognised as auto-repeat and ignored.
+                self._arrow_last_release_time = _ev_time(event)
+                return
             if kc not in self._mod_keycodes:
                 return
             self._mod_last_release_time = _ev_time(event)
@@ -664,8 +900,9 @@ class ZoneDaemon:
             if raw_type == X.MotionNotify and self._state == _State.IDLE:
                 data = data[32:]
                 continue
-            # Skip keyboard events entirely when modifier snap is disabled.
-            if raw_type in (X.KeyPress, X.KeyRelease) and not self._mod_snap:
+            # Skip keyboard events entirely when no keyboard feature is on.
+            if raw_type in (X.KeyPress, X.KeyRelease) and \
+                    not (self._mod_snap or self._kbd_move):
                 data = data[32:]
                 continue
             try:
@@ -682,13 +919,14 @@ class ZoneDaemon:
     def _record_spec(self) -> dict:
         """Build the RECORD range spec for the current settings.
 
-        Keyboard events (KeyPress=2, KeyRelease=3) are requested ONLY when
-        modifier snap is enabled.  When it is off — the default — the range
-        starts at ButtonPress=4, so keystrokes typed in other applications are
-        never delivered to this process at all (principle of least privilege:
-        we do not subscribe to a global keystroke feed we have no use for).
+        Keyboard events (KeyPress=2, KeyRelease=3) are requested ONLY when a
+        keyboard feature is enabled (modifier snap or Super+Arrow zone move).
+        When both are off — the default — the range starts at ButtonPress=4, so
+        keystrokes typed in other applications are never delivered to this
+        process at all (principle of least privilege: we do not subscribe to a
+        global keystroke feed we have no use for).
         """
-        first_event = X.KeyPress if self._mod_snap else X.ButtonPress
+        first_event = X.KeyPress if (self._mod_snap or self._kbd_move) else X.ButtonPress
         return {
             "core_requests":    (0, 0),
             "core_replies":     (0, 0),
@@ -756,15 +994,36 @@ class ZoneDaemon:
         self._layouts         = layouts
         self._multi           = bool(monitors and len(monitors) > 1)
 
+    def _keyboard_subscribed(self) -> bool:
+        """True when the RECORD range currently includes keyboard events."""
+        return self._mod_snap or self._kbd_move
+
+    def _rebuild_record_context(self) -> None:
+        """Break the blocking record_enable_context so run() rebuilds the range.
+
+        Disabling from a separate display connection (ctrl_dpy) is the documented
+        python-xlib pattern; the editor is open and the daemon idle when this
+        runs, so there is no concurrent use of ctrl_dpy from the record thread.
+        """
+        self._reconfigure_requested = True
+        ctx = self._ctx
+        if ctx is not None:
+            try:
+                self.ctrl_dpy.record_disable_context(ctx)
+                self.ctrl_dpy.flush()
+            except Exception as e:
+                print(f"[linuxzones] RECORD reconfigure failed: {e}")
+
     def update_mod_snap(self, enabled: bool, mod_key: str = "shift") -> None:
         """Toggle modifier snap and/or change the modifier key.
 
         Called from the UI thread after the editor saves.  Re-resolves the
         modifier's keycodes immediately (cheap, no context change required when
         only the key changes, since the RECORD range is identical for any
-        modifier).  When the *enabled* flag flips, the RECORD context is rebuilt
-        so the keyboard-event subscription matches the new setting: keystrokes
-        from other applications are intercepted only while modifier snap is on.
+        modifier).  The RECORD context is rebuilt only when this flip changes
+        whether *any* keyboard feature needs the keyboard-event subscription (so
+        toggling modifier snap while Super+Arrow move is already on is a no-op
+        for the context).
         """
         mod_key = mod_key if mod_key in _MODIFIER_KEYSYMS else "shift"
         self._mod_key = mod_key
@@ -772,17 +1031,105 @@ class ZoneDaemon:
 
         if enabled == self._mod_snap:
             return
+        was_subscribed = self._keyboard_subscribed()
         self._mod_snap = enabled
-        self._reconfigure_requested = True
-        # Break the blocking record_enable_context in the daemon thread so run()
-        # rebuilds the context.  Disabling from a separate display connection
-        # (ctrl_dpy) is the documented python-xlib pattern; the editor is open
-        # and the daemon idle when this runs, so there is no concurrent use of
-        # ctrl_dpy from the record thread.
-        ctx = self._ctx
-        if ctx is not None:
-            try:
-                self.ctrl_dpy.record_disable_context(ctx)
-                self.ctrl_dpy.flush()
-            except Exception as e:
-                print(f"[linuxzones] modifier snap reconfigure failed: {e}")
+        if self._keyboard_subscribed() != was_subscribed:
+            self._rebuild_record_context()
+
+    @property
+    def kbd_move_saved(self) -> dict:
+        """Snapshot of WM keybindings we cleared, for persistence/restore."""
+        return dict(self._kbd_move_saved)
+
+    def update_kbd_move(self, enabled: bool) -> None:
+        """Enable/disable Super+Arrow zone navigation.
+
+        Enabling clears the conflicting WM shortcut (snapshotting the originals
+        so they can be restored) and, when needed, rebuilds the RECORD context
+        to start observing keyboard events.  Disabling restores the shortcut.
+        Safe to call with ``enabled`` equal to the current state at startup —
+        it (re)applies the gsettings change without churning the context.
+        """
+        if enabled:
+            self._kbd_move_saved = _free_super_arrows(self._kbd_move_saved)
+        else:
+            _restore_super_arrows(self._kbd_move_saved)
+            self._kbd_move_saved = {}
+
+        if enabled == self._kbd_move:
+            return
+        was_subscribed = self._keyboard_subscribed()
+        self._kbd_move = enabled
+        if self._keyboard_subscribed() != was_subscribed:
+            self._rebuild_record_context()
+
+    def restore_kbd_bindings(self) -> None:
+        """Restore any cleared WM shortcut without changing config/flags.
+
+        Called on app exit so Super+Arrow returns to the window manager while
+        LinuxZones is not running to interpret it.  Idempotent.
+        """
+        if self._kbd_move_saved:
+            _restore_super_arrows(self._kbd_move_saved)
+
+
+# ---------------------------------------------------------------- gsettings (WM shortcut)
+
+def _gsettings(*args: str) -> Optional[str]:
+    """Run ``gsettings`` and return stripped stdout, or None on any failure."""
+    try:
+        r = subprocess.run(["gsettings", *args],
+                           capture_output=True, timeout=3, text=True)
+        if r.returncode == 0:
+            return r.stdout.strip()
+        print(f"[linuxzones] gsettings {' '.join(args)} → rc={r.returncode}: "
+              f"{r.stderr.strip()}")
+    except Exception as e:
+        print(f"[linuxzones] gsettings {' '.join(args)} failed: {e}")
+    return None
+
+
+def _parse_accel_list(value: str) -> Optional[list]:
+    """Parse a gsettings 'as' value (e.g. ``['<Super>Left']`` or ``@as []``)."""
+    if value.startswith("@as"):
+        value = value.split(" ", 1)[1] if " " in value else "[]"
+    try:
+        result = ast.literal_eval(value)
+    except Exception:
+        return None
+    return result if isinstance(result, list) else None
+
+
+def _free_super_arrows(existing_saved: dict) -> dict:
+    """Strip the Super+Arrow accelerators from Cinnamon's WM keybindings.
+
+    Removing them frees the keys so the passive RECORD path can observe
+    Super+Arrow without the WM also acting (it would otherwise tile the window).
+    Returns the snapshot of original accelerator lists needed to restore them.
+    An ``existing_saved`` snapshot (from a prior session / config) is preserved
+    verbatim rather than re-recorded, so a crash that left the keys already
+    cleared can never overwrite the true originals with empty lists.
+    """
+    listing = _gsettings("list-keys", _WM_KEYBINDINGS_SCHEMA)
+    if listing is None:
+        return dict(existing_saved)
+    saved = dict(existing_saved)
+    for key in listing.split():
+        cur = _gsettings("get", _WM_KEYBINDINGS_SCHEMA, key)
+        if cur is None:
+            continue
+        accels = _parse_accel_list(cur)
+        if accels is None:
+            continue
+        remaining = [a for a in accels if a not in _SUPER_ARROW_ACCELS]
+        if len(remaining) != len(accels):
+            if key not in saved:
+                saved[key] = list(accels)
+            _gsettings("set", _WM_KEYBINDINGS_SCHEMA, key, str(remaining))
+    return saved
+
+
+def _restore_super_arrows(saved: dict) -> None:
+    """Write the snapshotted accelerator lists back; Muffin re-grabs live."""
+    for key, accels in saved.items():
+        _gsettings("set", _WM_KEYBINDINGS_SCHEMA, key, str(list(accels)))

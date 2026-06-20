@@ -57,6 +57,8 @@ class ZoneEditor:
         master: Optional[tk.Tk] = None,
         monitors: Optional[List[MonitorInfo]] = None,
         monitor_layouts: Optional[Dict[str, str]] = None,
+        kbd_move: bool = False,
+        kbd_move_saved_bindings: Optional[Dict[str, list]] = None,
     ):
         self.layouts       = copy.deepcopy(layouts)
         self.active_layout = active_layout
@@ -99,6 +101,10 @@ class ZoneEditor:
         self.mod_snap_var = tk.BooleanVar(value=bool(modifier_snap))
         self.mod_key_var  = tk.StringVar(
             value=_MOD_LABELS[_coerce_modifier(modifier_key)])
+        self.kbd_move_var = tk.BooleanVar(value=bool(kbd_move))
+        # Snapshot of cleared WM shortcuts — the editor doesn't manage it, it
+        # just round-trips it back into the saved ZonesConfig untouched.
+        self._kbd_move_saved = dict(kbd_move_saved_bindings or {})
 
         self._build()
         self._refresh_list()
@@ -260,6 +266,22 @@ class ZoneEditor:
                  "monitor mouse buttons only.",
             justify="left",
             foreground="#888888",
+        ).pack(anchor="w", padx=(20, 0), pady=(0, 6))
+
+        ttk.Separator(col3, orient="horizontal").pack(fill="x", pady=(0, 6))
+
+        ttk.Checkbutton(
+            col3,
+            text="Move windows with Super+Arrow",
+            variable=self.kbd_move_var,
+        ).pack(anchor="w")
+        ttk.Label(
+            col3,
+            text="Super+←/→/↑/↓ moves the active window\n"
+                 "between zones. Frees your desktop's\n"
+                 "Super+Arrow tiling shortcut while on;\n"
+                 "it is restored when you turn this off.",
+            justify="left",
         ).pack(anchor="w", padx=(20, 0), pady=(0, 6))
 
         ttk.Separator(col3, orient="horizontal").pack(fill="x", pady=(0, 6))
@@ -695,6 +717,8 @@ class ZoneEditor:
             mod_snap        = self.mod_snap_var.get(),
             mod_key         = _LABEL_TO_MOD.get(self.mod_key_var.get(), "shift"),
             monitor_layouts = dict(self._monitor_layouts),
+            kbd_move        = self.kbd_move_var.get(),
+            kbd_move_saved_bindings = dict(self._kbd_move_saved),
         )
         self.root.destroy()
 
