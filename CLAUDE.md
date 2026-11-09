@@ -109,6 +109,21 @@ nearest-centre fallback). At a monitor edge `_cross_monitor_target` /
 `_entry_zone` hop to the adjacent monitor. Auto-repeat is rejected with the
 same shared-timestamp trick as modifier snap, so one move per physical press.
 
+**In-app drags (browser tab tear-off) snap the window the drop creates.**
+Tearing a tab off Firefox is an app-level drag-and-drop, not a WM move: no
+window moves, and the torn-off window does not exist until the drop. Snapping
+`_active_window()` there moved the *main* browser window instead. So B1 press
+records `_drag_geom` (root-relative geometry of `_drag_win`), and `_snap()`
+calls `_is_in_app_drag()` — position unchanged within `MOVE_TOL` → in-app. Then
+it snapshots `_NET_CLIENT_LIST`, fakes the B1 release as usual (which now
+*completes the app's drop*), and `_await_drop_window()` polls for a new client
+with the same `_NET_WM_PID` as the source (never grabs an unrelated window),
+up to `DROP_WAIT`. If instead the source window has moved by then, the WM was
+doing a wireframe (non-opaque) move that commits on release, so the source is
+snapped as normal. Neither → nothing is snapped (e.g. a file/text drag). The
+wait runs on the RECORD thread on purpose: python-xlib isn't thread-safe
+without `Xlib.threaded`, so `ctrl_dpy` must not be used from a worker thread.
+
 **Monitor detection uses `Xlib.ext.randr.get_monitors()`.**
 The struct fields are `width_in_pixels` / `height_in_pixels` — not
 `width` / `height` (which don't exist and will raise `AttributeError`).

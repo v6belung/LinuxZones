@@ -53,6 +53,7 @@ def make_daemon(halves_layout):
         d._btn1_x   = 0
         d._btn1_y   = 0
         d._drag_win = None
+        d._drag_geom = None
         d._last_zone = None
         d._b1_held            = False
         d._swallow_b1_release = False
@@ -98,6 +99,7 @@ def make_daemon(halves_layout):
 
         # Inert stubs for the X11 side effects.  Tests override as needed.
         d._managed_window_at = lambda: SimpleNamespace(id=0xABCDEF)
+        d._abs_geometry = lambda win: None
         d._snap = lambda zone_idx: d.__dict__.setdefault("_snap_calls", []).append(zone_idx)
 
         return d

@@ -39,6 +39,12 @@ P_RESIZE_INC   = 1 << 6  # WM_NORMAL_HINTS flag bit advertising resize increment
 SNAP_RETRIES   = 4     # max resize attempts when a window won't fill its zone
 SNAP_RETRY_GAP = 0.06  # seconds between a resize and reading back its geometry
 GEOM_TOL       = 2     # px: treat a client this much under target as "filled"
+# In-app drags (e.g. tearing a tab off Firefox) move no window; the window to
+# snap is created by the app only when the drop happens.  See _snap().
+MOVE_TOL       = 2     # px: drag window moved less than this → it is an in-app drag
+DROP_WAIT      = 1.5   # s: max wait for the drop to produce a new window
+DROP_POLL      = 0.05  # s: poll interval while waiting for that window
+DROP_SETTLE    = 0.15  # s: let the WM place / the app size the new window first
 
 # Canonical modifier name → the X11 keysym names whose hardware keycodes should
 # trigger the overlay.  Both left and right variants are included so either
@@ -123,6 +129,8 @@ class ZoneDaemon:
         self._a_max_v         = self.ctrl_dpy.intern_atom("_NET_WM_STATE_MAXIMIZED_VERT")
         self._a_workarea          = self.ctrl_dpy.intern_atom("_NET_WORKAREA")
         self._a_gtk_frame_extents = self.ctrl_dpy.intern_atom("_GTK_FRAME_EXTENTS")
+        self._a_client_list       = self.ctrl_dpy.intern_atom("_NET_CLIENT_LIST")
+        self._a_wm_pid            = self.ctrl_dpy.intern_atom("_NET_WM_PID")
 
         # Usable area (excludes taskbars/panels); zones are fractions of this.
         self._work_x, self._work_y, self._work_w, self._work_h = self._get_work_area()
@@ -132,6 +140,10 @@ class ZoneDaemon:
         self._btn1_x:    int              = 0
         self._btn1_y:    int              = 0
         self._drag_win:  Optional[object] = None
+        # Root-relative (x, y, w, h) of _drag_win at B1 press.  Compared at snap
+        # time: unchanged position means the drag never moved a window (an
+        # in-app drag such as a browser tab tear-off).
+        self._drag_geom: Optional[Tuple[int, int, int, int]] = None
         self._last_zone: Optional[Union[int, Tuple[int, int]]] = None
         # True while the user's physical B1 is held (set on press, cleared on
         # real release — fake releases are swallowed and do NOT clear this).
@@ -431,7 +443,18 @@ class ZoneDaemon:
         else:
             zone = snap_layout.zones[target]
 
+        # An in-app drag (tab tear-off) has moved no window: the window to snap
+        # does not exist yet — the app creates it on drop.  Snapshot the client
+        # list now so the new window can be identified after the drop.
+        in_app = self._is_in_app_drag()
+        if in_app:
+            before   = set(self._client_ids())
+            src_pid  = self._wm_pid(self._drag_win)
+            drag_win = self._drag_win
+
         # Step 1: Cancel the WM's pointer grab so it stops moving the window.
+        #         (For an in-app drag the same fake release completes the
+        #         app's drop instead, which is what creates the new window.)
         #         Without this the WM continues tracking the drag and overrides us.
         #         Set the swallow flag BEFORE sending so the RECORD loop discards
         #         the echo of this synthetic event and leaves state untouched.
@@ -446,7 +469,81 @@ class ZoneDaemon:
             self._swallow_b1_release = False   # XTest failed — nothing to swallow
             print(f"[linuxzones] XTest unavailable ({e}), snap may be unreliable")
 
+        if in_app:
+            win = self._await_drop_window(before, src_pid, drag_win)
+            if win is None:
+                print("[linuxzones] in-app drag: drop produced no window; nothing to snap")
+                return
+
         self._apply_zone(win, zone, ox, oy, ow, oh)
+
+    # ------------------------------------------------------------------ in-app drags
+
+    def _is_in_app_drag(self) -> bool:
+        """True when the current drag has not moved the window it started on.
+
+        A WM window move relocates the window as the pointer moves; an in-app
+        drag (browser tab tear-off, file/text drag-and-drop) leaves it in place.
+        Unknown geometry → False, i.e. keep the normal window-move behaviour.
+        """
+        if self._drag_win is None or self._drag_geom is None:
+            return False
+        cur = self._abs_geometry(self._drag_win)
+        if cur is None:
+            return False
+        return (abs(cur[0] - self._drag_geom[0]) <= MOVE_TOL and
+                abs(cur[1] - self._drag_geom[1]) <= MOVE_TOL)
+
+    def _client_ids(self) -> List[int]:
+        """Window IDs in the WM's _NET_CLIENT_LIST (empty on failure)."""
+        try:
+            prop = self.root.get_full_property(self._a_client_list, Xlib.Xatom.WINDOW)
+            if prop and prop.value is not None:
+                return [int(w) for w in prop.value]
+        except Exception:
+            pass
+        return []
+
+    def _wm_pid(self, win) -> Optional[int]:
+        """_NET_WM_PID of ``win``, or None if unset/unreadable."""
+        try:
+            prop = win.get_full_property(self._a_wm_pid, Xlib.Xatom.CARDINAL)
+            if prop and len(prop.value):
+                return int(prop.value[0])
+        except Exception:
+            pass
+        return None
+
+    def _await_drop_window(self, before: set, src_pid: Optional[int], drag_win):
+        """After an in-app drop, return the window that should be snapped.
+
+        Polls _NET_CLIENT_LIST for a newly managed client from the same process
+        as the drag source (so an unrelated window opening meanwhile is never
+        grabbed).  If instead the drag window itself has now moved, the WM was
+        doing a non-opaque (wireframe) move that only commits on release —
+        snap that window as usual.  Otherwise (e.g. a file or text drag dropped
+        somewhere) return None: there is nothing to snap.
+
+        Runs on the RECORD thread like the rest of _snap; python-xlib is not
+        thread-safe without Xlib.threaded, so ctrl_dpy must not be shared with
+        a worker thread.  Events arriving meanwhile are buffered, not lost.
+        """
+        deadline = time.monotonic() + DROP_WAIT
+        while True:
+            for wid in self._client_ids():
+                if wid in before:
+                    continue
+                win = self.ctrl_dpy.create_resource_object("window", wid)
+                if src_pid is not None and self._wm_pid(win) != src_pid:
+                    continue
+                print(f"[linuxzones] in-app drag: snapping new window 0x{wid:x}")
+                time.sleep(DROP_SETTLE)
+                return win
+            if not self._is_in_app_drag():
+                return drag_win          # wireframe WM move committed on release
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(DROP_POLL)
 
     def _apply_zone(self, win, zone, ox: int, oy: int, ow: int, oh: int) -> None:
         """Drive ``win`` to fill ``zone`` (fractions of the ox/oy/ow/oh box).
@@ -796,8 +893,9 @@ class ZoneDaemon:
                 if zone_idx is not None:
                     self._snap(zone_idx)
                 if not self._b1_held:
-                    self._state    = _State.IDLE
-                    self._drag_win = None
+                    self._state     = _State.IDLE
+                    self._drag_win  = None
+                    self._drag_geom = None
             return
 
         # ---- Mouse button events -----------------------------------------
@@ -810,6 +908,8 @@ class ZoneDaemon:
                 self._btn1_y   = event.root_y
                 self._last_zone = None
                 self._drag_win  = self._managed_window_at()
+                self._drag_geom = (self._abs_geometry(self._drag_win)
+                                   if self._drag_win else None)
                 self._b1_held   = True
 
             elif btn == 3 and self._state in (_State.DRAGGING, _State.OVERLAY_ACTIVE):
@@ -837,8 +937,9 @@ class ZoneDaemon:
                 # or released while overlay was visible), go straight to IDLE so
                 # a stale DRAGGING state doesn't linger.
                 if not self._b1_held:
-                    self._state    = _State.IDLE
-                    self._drag_win = None
+                    self._state     = _State.IDLE
+                    self._drag_win  = None
+                    self._drag_geom = None
 
             elif btn == 1:
                 if self._swallow_b1_release:
@@ -856,8 +957,9 @@ class ZoneDaemon:
                 if self._state in (_State.DRAGGING, _State.BUTTON1_DOWN):
                     if self._state == _State.DRAGGING:
                         self.ui_queue.put(("hide",))
-                    self._state    = _State.IDLE
-                    self._drag_win = None
+                    self._state     = _State.IDLE
+                    self._drag_win  = None
+                    self._drag_geom = None
 
         elif etype == X.MotionNotify:
             if self._state == _State.BUTTON1_DOWN:

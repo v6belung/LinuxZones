@@ -50,6 +50,10 @@ After installation, **double-click the LinuxZones icon** on your desktop to star
 
 Release the left button at any point to cancel. A quick right-click (tap, not hold) while dragging works the same way.
 
+### Tearing off a browser tab into a zone
+
+Dragging a tab out of a browser (e.g. Firefox) works the same way: start dragging the tab, hold right-click (or the modifier), pick a zone, release. The new window the browser creates for the tab is snapped into the zone; the original browser window stays where it was. LinuxZones recognises this kind of drag because no window moves while it happens, and waits up to 1.5 s after the drop for the app to open the new window.
+
 ### Spanning two zones
 
 Move the cursor within **10 px of the boundary** between two adjacent zones — a white strip appears there instead of highlighting either zone. Releasing snaps the window to the **combined bounding box** of both zones.
