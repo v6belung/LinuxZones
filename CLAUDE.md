@@ -124,6 +124,18 @@ snapped as normal. Neither → nothing is snapped (e.g. a file/text drag). The
 wait runs on the RECORD thread on purpose: python-xlib isn't thread-safe
 without `Xlib.threaded`, so `ctrl_dpy` must not be used from a worker thread.
 
+**The overlay only opens for window drags (`_is_window_drag()`).**
+RECORD sees every B1 press, so "B1 held + moved past `DRAG_THRESHOLD`" alone
+also matches drags *inside* an app — e.g. WoW mouselook (hold left) then run
+(press right) popped the overlay. B3 press and the modifier key now open the
+overlay only if one of these holds: the B1 press landed outside the client
+rect (`_press_on_frame`, i.e. on the WM title bar/border); the window has
+moved since the press (`not _is_in_app_drag()` — CSD header bars, Alt+drag);
+or an XDND drag is in progress (`_dnd_active()`: `XdndSelection` has an owner
+— tab tear-off; GTK releases it when the drag ends). A plain client-area
+check alone would break CSD windows and tab tear-off. Unknown geometry stays
+permissive (treated as a frame press).
+
 **Monitor detection uses `Xlib.ext.randr.get_monitors()`.**
 The struct fields are `width_in_pixels` / `height_in_pixels` — not
 `width` / `height` (which don't exist and will raise `AttributeError`).

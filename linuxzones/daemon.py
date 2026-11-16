@@ -72,6 +72,18 @@ _WM_KEYBINDINGS_SCHEMA = "org.cinnamon.desktop.keybindings.wm"
 _SUPER_ARROW_ACCELS = ("<Super>Left", "<Super>Right", "<Super>Up", "<Super>Down")
 
 
+def _contains(geom, x: int, y: int) -> bool:
+    """True when (x, y) lies inside the root-relative rect ``geom`` (x, y, w, h).
+
+    Unknown geometry (None) → False, so the press is treated as a frame press
+    and the drag keeps the permissive pre-gating behaviour.
+    """
+    if geom is None:
+        return False
+    gx, gy, gw, gh = geom
+    return gx <= x < gx + gw and gy <= y < gy + gh
+
+
 def _ev_time(event) -> int:
     """X server timestamp (ms) of a key/button event, or -2 if unavailable.
 
@@ -131,6 +143,7 @@ class ZoneDaemon:
         self._a_gtk_frame_extents = self.ctrl_dpy.intern_atom("_GTK_FRAME_EXTENTS")
         self._a_client_list       = self.ctrl_dpy.intern_atom("_NET_CLIENT_LIST")
         self._a_wm_pid            = self.ctrl_dpy.intern_atom("_NET_WM_PID")
+        self._a_xdnd_selection    = self.ctrl_dpy.intern_atom("XdndSelection")
 
         # Usable area (excludes taskbars/panels); zones are fractions of this.
         self._work_x, self._work_y, self._work_w, self._work_h = self._get_work_area()
@@ -144,6 +157,9 @@ class ZoneDaemon:
         # time: unchanged position means the drag never moved a window (an
         # in-app drag such as a browser tab tear-off).
         self._drag_geom: Optional[Tuple[int, int, int, int]] = None
+        # True when the B1 press landed outside _drag_win's client area, i.e.
+        # on the WM frame (title bar / border).  See _is_window_drag().
+        self._press_on_frame: bool = False
         self._last_zone: Optional[Union[int, Tuple[int, int]]] = None
         # True while the user's physical B1 is held (set on press, cleared on
         # real release — fake releases are swallowed and do NOT clear this).
@@ -493,6 +509,36 @@ class ZoneDaemon:
             return False
         return (abs(cur[0] - self._drag_geom[0]) <= MOVE_TOL and
                 abs(cur[1] - self._drag_geom[1]) <= MOVE_TOL)
+
+    def _is_window_drag(self) -> bool:
+        """True when the current B1 drag is moving a window (or a tab tear-off).
+
+        Gates the overlay so that holding left + moving the mouse *inside* an
+        app (e.g. mouselook in a game, then right-click) never triggers it.
+        Allowed when any of these holds:
+          * the press landed on the WM frame (title bar / border), outside the
+            client area — a server-side-decorated window move;
+          * the window has moved since the press — a client-side-decorated
+            title bar (GTK header bar, Firefox tab strip) or an Alt+drag move;
+          * an XDND drag-and-drop is in progress — a browser tab tear-off.
+        """
+        if self._press_on_frame:
+            return True
+        if not self._is_in_app_drag():
+            return True
+        return self._dnd_active()
+
+    def _dnd_active(self) -> bool:
+        """True while some client owns XdndSelection (an XDND drag is running).
+
+        GTK (Firefox) and other toolkits own this selection for the duration
+        of a drag and release it when the drag ends.
+        """
+        try:
+            owner = self.ctrl_dpy.get_selection_owner(self._a_xdnd_selection)
+            return int(getattr(owner, "id", owner) or 0) != 0
+        except Exception:
+            return False
 
     def _client_ids(self) -> List[int]:
         """Window IDs in the WM's _NET_CLIENT_LIST (empty on failure)."""
@@ -863,7 +909,7 @@ class ZoneDaemon:
             if self._mod_held or _ev_time(event) == self._mod_last_release_time:
                 return
             self._mod_held = True
-            if self._state == _State.DRAGGING:
+            if self._state == _State.DRAGGING and self._is_window_drag():
                 self._overlay_by_mod = True
                 self._state = _State.OVERLAY_ACTIVE
                 zone_idx = self._zone_at(event.root_x, event.root_y)
@@ -910,9 +956,13 @@ class ZoneDaemon:
                 self._drag_win  = self._managed_window_at()
                 self._drag_geom = (self._abs_geometry(self._drag_win)
                                    if self._drag_win else None)
+                self._press_on_frame = not _contains(
+                    self._drag_geom, event.root_x, event.root_y)
                 self._b1_held   = True
 
-            elif btn == 3 and self._state in (_State.DRAGGING, _State.OVERLAY_ACTIVE):
+            elif btn == 3 and (
+                    self._state == _State.OVERLAY_ACTIVE or
+                    (self._state == _State.DRAGGING and self._is_window_drag())):
                 # Right pressed while dragging → show overlay (B3 takes ownership;
                 # any in-progress modifier-triggered overlay is handed over to B3).
                 self._state = _State.OVERLAY_ACTIVE

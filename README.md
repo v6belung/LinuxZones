@@ -50,9 +50,11 @@ After installation, **double-click the LinuxZones icon** on your desktop to star
 
 Release the left button at any point to cancel. A quick right-click (tap, not hold) while dragging works the same way.
 
+Only real window drags trigger the overlay: a drag on the title bar or border, or any drag that is actually moving the window (apps that draw their own title bar, Alt+drag). Holding left and moving the mouse *inside* an app does nothing, so games that use left+right mouse (e.g. mouselook and run in World of Warcraft) are left alone.
+
 ### Tearing off a browser tab into a zone
 
-Dragging a tab out of a browser (e.g. Firefox) works the same way: start dragging the tab, hold right-click (or the modifier), pick a zone, release. The new window the browser creates for the tab is snapped into the zone; the original browser window stays where it was. LinuxZones recognises this kind of drag because no window moves while it happens, and waits up to 1.5 s after the drop for the app to open the new window.
+Dragging a tab out of a browser (e.g. Firefox) works the same way: start dragging the tab, hold right-click (or the modifier), pick a zone, release. The new window the browser creates for the tab is snapped into the zone; the original browser window stays where it was. LinuxZones recognises this kind of drag because the browser runs a drag-and-drop (it owns the X `XdndSelection`) while no window moves, and waits up to 1.5 s after the drop for the app to open the new window.
 
 ### Spanning two zones
 
